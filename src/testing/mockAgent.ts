@@ -86,6 +86,41 @@ export class MockA2AAgent {
   };
 }
 
+export interface FlakyFetchOptions {
+  /** Fail the first N matching requests, then delegate normally. */
+  failFirst: number;
+  /**
+   * Restrict failures to these wire methods (`"SendMessage"`, `"GetTask"`,
+   * `"CancelTask"`, `"GetAgentCard"` for card GETs). Default: every request.
+   */
+  methods?: string[];
+  /** Error factory. Default: a network-ish `TypeError("fetch failed")` (undici-style). */
+  error?: () => Error;
+}
+
+/**
+ * Wrap a mock agent's fetch in transient network failure: the first
+ * `failFirst` matching requests throw BEFORE reaching the server (the request
+ * is still recorded in `mock.callLog`, so tests can assert what EVERY attempt
+ * carried — e.g. that retries reuse the identical messageId), then delegates.
+ */
+export function flakyFetchImpl(mock: MockA2AAgent, opts: FlakyFetchOptions): typeof fetch {
+  let failed = 0;
+  const matches = (method: string) => !opts.methods || opts.methods.includes(method);
+  const makeError = opts.error ?? (() => new TypeError("fetch failed"));
+  return async (input, init) => {
+    const isGet = !init?.method || init.method.toUpperCase() === "GET";
+    const body = isGet ? undefined : (JSON.parse(String(init!.body)) as Record<string, unknown>);
+    const method = isGet ? "GetAgentCard" : String(body!.method);
+    if (failed < opts.failFirst && matches(method)) {
+      failed++;
+      mock.callLog.push({ method, params: isGet ? String(input) : body!.params });
+      throw makeError();
+    }
+    return mock.fetchImpl(input, init);
+  };
+}
+
 function isAsyncGenerator(v: unknown): v is AsyncGenerator<unknown> {
   return typeof (v as AsyncGenerator<unknown>)?.[Symbol.asyncIterator] === "function";
 }
