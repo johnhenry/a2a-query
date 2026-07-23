@@ -37,6 +37,24 @@ if (typeof handle === "object" && "result" in handle) {
 }
 ```
 
+## Docs & examples
+
+- **[docs/api.md](./docs/api.md)** — every export, with an example.
+- **[docs/design.md](./docs/design.md)** — how a2aq maps A2A onto the shared
+  agent-query core: keys/tags vocabulary, the task-handle lifecycle state machine
+  (incl. paused-state broker mechanics), what the SDK provides vs what a2aq adds,
+  positioning vs AG-UI/A2UI.
+- **[examples/](./examples)** — graded, runnable, no network (in-process mock agent):
+
+| Run | Shows |
+|---|---|
+| `npm run example:01` | Hello task — send → handle → `result()`, print the artifact |
+| `npm run example:02` | Live status — `subscribe()` prints each status transition |
+| `npm run example:03` | Approval inbox — broker `list()`/`resolve()` + audit trail |
+| `npm run example:04` | Manual resume — no broker: observe the pause, `respond()` |
+| `npm run example:05` | Multi-agent — tasks in flight on two agents, cache-snapshot dashboard |
+| `npm run example:06` | Policy autopilot — `allow` auto-clears, `deny` blocks (task stays parked) |
+
 Status: **first slice** (post-1.0 A2A, `@a2a-js/sdk@1.0.0` pinned exact). Streaming
 (`sendMessageStream`/`resubscribeTask`), webhook push notifications, artifact cache
 keys, skill codegen, React hooks, and devtools are tracked in the issues. Part of the
