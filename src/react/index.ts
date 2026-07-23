@@ -8,11 +8,12 @@
 // React is an OPTIONAL peer dependency: importing the root entrypoint never
 // touches it; only this subpath does.
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useCacheEntry, useInteractions } from "@johnhenry/agent-query-core/react";
 import type { Interaction } from "@johnhenry/agent-query-core";
 import { TaskState, type AgentCard, type Artifact, type Message, type Task } from "@a2a-js/sdk";
 import type { A2AQuery, InputDecision, TaskHandle } from "../client.js";
+import { sendSkill, type SkillInput, type SkillSendOptions } from "../skills.js";
 
 /**
  * How hooks name a task: a plain `{ agent, taskId }` pair (cache-only
@@ -131,6 +132,70 @@ export function usePendingInput(q: A2AQuery): UsePendingInputResult {
       deny: (id: number) => resolve(id, { action: "deny" }),
     };
   }, [interactions, resolve]);
+}
+
+/** What `useSkillTask` (and generated `useX` hooks) return: a mutation-shaped surface. */
+export interface UseSkillTaskResult {
+  /** The skill this hook is bound to (travels in message metadata — see `sendSkill`). */
+  skillId: string;
+  /** Invoke the skill. Task-shaped replies become the hook's live `handle`/`task`. */
+  send: (input: SkillInput, opts?: SkillSendOptions) => Promise<Message | TaskHandle>;
+  /** True while a `send` is on the wire (task execution progress shows in `status`). */
+  sending: boolean;
+  /** The last send's error, if it threw (cleared by the next send). */
+  error: Error | undefined;
+  /** The handle for the last task-shaped reply. */
+  handle: TaskHandle | undefined;
+  /** The last direct message-shaped reply (task-shaped replies set `handle` instead). */
+  reply: Message | undefined;
+  /** Reactive snapshot of the handle's task. */
+  task: Task | undefined;
+  /** Reactive task state name (`"TASK_STATE_WORKING"`, …). */
+  status: string | undefined;
+  /** Reactive artifacts of the handle's task. */
+  artifacts: Artifact[];
+}
+
+/**
+ * A skill as a mutation-shaped hook (the orval / connect-query pattern):
+ * `send(input)` invokes the skill via `sendSkill` (the framework-free layer),
+ * and the hook exposes the resulting TaskHandle's reactive state — the
+ * mounted hook drives the handle's loop, so no `result()` call is needed.
+ * Generated per-skill hooks (`a2aq-codegen --hooks`) are thin wrappers over
+ * this.
+ */
+export function useSkillTask(q: A2AQuery, agent: string, skillId: string): UseSkillTaskResult {
+  const [handle, setHandle] = useState<TaskHandle | undefined>(undefined);
+  const [reply, setReply] = useState<Message | undefined>(undefined);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<Error | undefined>(undefined);
+  const task = useTask(q, handle);
+  const status = useTaskStatus(q, handle);
+  const artifacts = useTaskArtifacts(q, handle);
+  return useMemo(() => {
+    const send = async (input: SkillInput, opts?: SkillSendOptions): Promise<Message | TaskHandle> => {
+      setSending(true);
+      setError(undefined);
+      try {
+        const res = await sendSkill(q, agent, skillId, input, opts);
+        if (typeof (res as TaskHandle).subscribe === "function") {
+          setHandle(res as TaskHandle);
+          setReply(undefined);
+        } else {
+          setReply(res as Message);
+          setHandle(undefined);
+        }
+        return res;
+      } catch (err) {
+        const e = err instanceof Error ? err : new Error(String(err));
+        setError(e);
+        throw e;
+      } finally {
+        setSending(false);
+      }
+    };
+    return { skillId, send, sending, error, handle, reply, task, status, artifacts };
+  }, [q, agent, skillId, sending, error, handle, reply, task, status, artifacts]);
 }
 
 // The core hooks compose with a2aq directly (useAuditLog(q.interactions),

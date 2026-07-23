@@ -21,6 +21,7 @@ The complete public surface of `@johnhenry/a2aq`. Conceptual background lives in
 - [Resilience: `retry` + idempotency](#resilience-retry--idempotency)
 - [Devtools: `devtools` + `A2ADevtoolsEvent`](#devtools)
 - [React hooks: `@johnhenry/a2aq/react`](#react-hooks-johnhenrya2aqreact)
+- [Skills: `sendSkill` + `a2aq-codegen`](#skills-sendskill--a2aq-codegen)
 - [Keys & tags](#keys--tags)
 - [Re-exported core primitives](#re-exported-core-primitives)
 - [Testing: the in-process mock agent](#testing-the-in-process-mock-agent)
@@ -553,6 +554,82 @@ The core hooks compose with a2aq directly and are re-exported for a
 one-stop import: `useCacheEntry(q.cache, key)`, `useInteractions`,
 `useAuditLog(q.interactions)`, `usePeerStatus(q.status)`, `useVersioned`,
 and the `<AgentQueryDevtools>` panel.
+
+### `useSkillTask(q, agent, skillId)`
+
+A skill as a mutation-shaped hook (the orval / connect-query pattern):
+`send(input)` invokes the skill via `sendSkill`, and the hook exposes the
+resulting handle's reactive state — `{ send, sending, error, handle, reply,
+task, status, artifacts, skillId }`. The mounted hook drives the handle's
+loop. Generated per-skill hooks (`a2aq-codegen --hooks`) are one-line
+wrappers over this.
+
+```tsx
+function Booker() {
+  const { send, status, artifacts } = useSkillTask(q, "travel", "book-flight");
+  return (
+    <>
+      <button onClick={() => void send("SFO to JFK tomorrow")}>book</button>
+      <div>{status}</div>
+    </>
+  );
+}
+```
+
+---
+
+## Skills: `sendSkill` + `a2aq-codegen`
+
+**What the card actually provides.** A2A's `AgentSkill` is discovery data:
+`id`, `name`, `description`, `tags`, `examples`, and media modes
+(`inputModes`/`outputModes`). It does **not** carry parameter schemas —
+there is no JSON Schema to derive typed params from — and A2A Messages have
+no first-class skill field. a2aq is honest about both: skill invocation
+takes `SkillInput` (`string | Part[]`), and the skill id travels in message
+metadata under `SKILL_METADATA_KEY` (`"a2aq/skillId"`). Agents that ignore
+the key lose nothing; the message is a plain A2A message either way.
+
+### The runtime layer
+
+```ts
+import { sendSkill, skillMessage, textPart, SKILL_METADATA_KEY } from "@johnhenry/a2aq";
+
+// Exactly the sendMessage contract (retry under a fixed messageId,
+// task-shaped replies come back as a TaskHandle):
+const handle = await sendSkill(q, "travel", "book-flight", "SFO to JFK tomorrow");
+
+// Or build the message yourself (metadata is merged; the skill id key wins):
+skillMessage("book-flight", [textPart("SFO to JFK")], { contextId: ctx });
+```
+
+### The generator
+
+`generateSkillModule(card, opts?)` returns deterministic TypeScript source:
+a `skills` record + `SkillId` union (UI listings), one `sendX(q, agent,
+input, opts?)` per skill, and — with `{ hooks: true }` — one `useX(q, agent)`
+hook over `useSkillTask`. Hooks are behind the flag so non-React consumers
+get output with no react import. Skill ids become PascalCase identifiers
+(`book-flight` → `sendBookFlight`; collisions get numeric suffixes,
+first-come keeps the clean name). The card's modes and examples land in the
+JSDoc where a schema would otherwise inform the types, and the generated
+header restates the no-schema limitation.
+
+### The CLI
+
+```
+a2aq-codegen <card-url-or-file> [-o out.ts] [--hooks]
+             [--import-from spec] [--react-import-from spec]
+```
+
+Accepts a card JSON file, a direct card URL, or an agent base URL (the
+well-known `/.well-known/agent-card.json` path is tried as a fallback).
+Without `-o` the module goes to stdout. `--import-from` /
+`--react-import-from` retarget the imports (defaults:
+`@johnhenry/a2aq` and `@johnhenry/a2aq/react`) — useful for monorepos and
+golden-file tests. Generated output is check-in friendly: regenerate and
+diff, like any orval-style client.
+
+See `examples/11-skill-codegen.ts`.
 
 ---
 

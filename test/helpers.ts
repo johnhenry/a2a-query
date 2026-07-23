@@ -1,8 +1,32 @@
 // Shared test plumbing: message builder, poll-friendly waiters, wired-up fixtures.
 
-import type { Message } from "@a2a-js/sdk";
+import type { AgentSkill, Message } from "@a2a-js/sdk";
 import { A2AQuery, type InteractionBroker, type InputDecision } from "../src/index.js";
 import { MockA2AAgent, type AgentExecutor } from "../src/testing/mockAgent.js";
+
+/** Card skills used by the codegen tests/fixtures (regenerate goldens when these change). */
+export const demoSkills: AgentSkill[] = [
+  {
+    id: "book-flight",
+    name: "Book flight",
+    description: "Books a flight from a natural-language request.",
+    tags: ["travel", "booking"],
+    examples: ["book SFO to JFK tomorrow morning"],
+    inputModes: ["text/plain"],
+    outputModes: ["text/plain"],
+    securityRequirements: [],
+  },
+  {
+    id: "2fa.reset",
+    name: "Reset 2FA",
+    description: "Resets a user's two-factor authentication.",
+    tags: [],
+    examples: [],
+    inputModes: [],
+    outputModes: [],
+    securityRequirements: [],
+  },
+];
 
 export const tick = (ms = 10) => new Promise((r) => setTimeout(r, ms));
 

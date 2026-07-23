@@ -278,6 +278,33 @@ Two deliberate choices:
   graph, and the hooks live in the same package so they can never drift from
   the store's semantics.
 
+## Skill codegen: honest about what the card declares
+
+The mcpq codegen pattern — machine-readable capability descriptions become
+typed client code — meets a protocol reality in A2A: `AgentSkill` is
+*discovery* data (id, name, description, tags, examples, media modes), not a
+parameter schema. There is nothing to derive typed params from, and Messages
+carry no first-class skill field. Pretending otherwise (inventing schemas
+from examples, or emitting `any`-typed param bags) would manufacture a type
+safety the wire doesn't have.
+
+So the generated unit is shaped by what IS there. Per skill: a
+`sendX(q, agent, input: SkillInput, opts?)` helper (`SkillInput` =
+`string | Part[]` — text for the common case, Parts when `inputModes` wants
+files or data) that tags the skill id into message metadata under
+`"a2aq/skillId"`, and — behind `--hooks`, per the orval / connect-query
+precedent that developers want the *hook* as the generated unit — a
+`useX(q, agent)` wrapper over `useSkillTask`. The card's modes and examples
+land in JSDoc, where a schema would otherwise inform the types; the
+generated header restates the limitation. Should a future A2A revision (or
+an extension) add parameter schemas to skills, typed params slot into this
+same surface without breaking it.
+
+Everything generated is a thin wrapper over exported runtime
+(`sendSkill`, `useSkillTask`) — the generator emits *names*, not logic, so
+generated modules never drift from library semantics and golden-file tests
+stay trivial.
+
 ## Positioning: A2A vs AG-UI / A2UI
 
 Adjacent protocols answer different questions:
