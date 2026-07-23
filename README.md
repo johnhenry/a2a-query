@@ -1,0 +1,46 @@
+# @johnhenry/a2aq — a2a-query
+
+**A reactive, cached, embeddable A2A client for non-agentic applications.**
+
+The official [`@a2a-js/sdk`](https://github.com/a2aproject/a2a-js) gives you transports,
+wire codecs, and a single-endpoint `Client`. `a2aq` adds the stratum apps need on top —
+the [TanStack-Query-of-A2A](https://github.com/johnhenry/mcp-query) move:
+
+- **Multi-agent registry/router** — one `A2AQuery` over many agents; cards resolved and
+  cached (`card(agent)`), SDK clients memoized per endpoint.
+- **Task-handle store** — `sendMessage()` returns a poll-driven `TaskHandle` whose
+  snapshots land in a reactive cache (`task()`, `subscribe()`, `result()`), so
+  dashboards observe live task state without hand-rolling loops.
+- **Approval broker for paused tasks** — A2A's `INPUT_REQUIRED` / `AUTH_REQUIRED` are
+  first-class human-in-the-loop resume points; they route through the shared
+  [`InteractionBroker`](https://github.com/johnhenry/agent-query-core) (policy
+  allow/deny/ask, pending queue for UI binding, audit trail), and an approved decision's
+  message resumes the task (`respond()`).
+- **In-process mock agent** (`@johnhenry/a2aq/testing`) — the SDK's own server stack
+  (`DefaultRequestHandler` + `JsonRpcTransportHandler` + `InMemoryTaskStore`) behind an
+  injected `fetch`: tests exercise the real wire with no sockets.
+
+```ts
+import { A2AQuery, InteractionBroker } from "@johnhenry/a2aq";
+
+const broker = new InteractionBroker({ policy: () => "ask" });
+const q = new A2AQuery({
+  agents: { travel: { url: "https://agents.example.com/travel" } },
+  interactions: broker,
+});
+
+const handle = await q.sendMessage("travel", myMessage);
+if (typeof handle === "object" && "result" in handle) {
+  // broker.list() surfaces INPUT_REQUIRED pauses to your approval inbox;
+  // broker.resolve(id, { action: "approve", message }) resumes the task.
+  const task = await handle.result();
+}
+```
+
+Status: **first slice** (post-1.0 A2A, `@a2a-js/sdk@1.0.0` pinned exact). Streaming
+(`sendMessageStream`/`resubscribeTask`), webhook push notifications, artifact cache
+keys, skill codegen, React hooks, and devtools are tracked in the issues. Part of the
+[agent-query family](https://github.com/johnhenry/agent-query-core): shared engine in
+`@johnhenry/agent-query-core`; siblings `@johnhenry/mcpq` (MCP) and `acpq` (ACP, planned).
+
+MIT

@@ -1,0 +1,49 @@
+{
+  "name": "@johnhenry/a2aq",
+  "version": "0.1.0",
+  "description": "Reactive, cached, embeddable A2A client for non-agentic apps \u2014 agent-card registry, task-handle store, approval broker. TanStack-Query-style, on the official @a2a-js/sdk.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/johnhenry/a2a-query.git"
+  },
+  "homepage": "https://github.com/johnhenry/a2a-query",
+  "bugs": "https://github.com/johnhenry/a2a-query/issues",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/mockAgent.d.ts",
+      "default": "./dist/testing/mockAgent.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@johnhenry/agent-query-core": "github:johnhenry/agent-query-core"
+  },
+  "peerDependencies": {
+    "@a2a-js/sdk": "1.0.0"
+  },
+  "devDependencies": {
+    "@a2a-js/sdk": "1.0.0",
+    "@vitest/coverage-v8": "^4.1.9",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.9"
+  }
+}
