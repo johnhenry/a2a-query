@@ -5,6 +5,8 @@ export type { A2ADevtoolsEvent, A2AQueryConfig, AgentConfig, InputDecision, Task
 export { serializeA2AKey, cardTag, taskTag, artifactTag, agentTag } from "./keys.js";
 export type { A2AKey } from "./keys.js";
 export { partText, artifactText, artifactsText } from "./artifacts.js";
+export { tapFetch } from "./wire.js";
+export type { A2AWireSummary } from "./wire.js";
 // Re-export the core primitives consumers configure.
 export { DevtoolsHub, InteractionBroker, QueryCache, StatusStore, withRetry } from "@johnhenry/agent-query-core";
 export type {

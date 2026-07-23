@@ -219,11 +219,23 @@ JSON-serializable events (no live objects; task states as enum names):
 | `a2a:artifact` | a new artifact appeared on an observed task |
 | `a2a:gate` | the broker resolved a pause gate (`kind` input/auth, `outcome` approve/deny) |
 | `a2a:card-refresh` | the agent card was refetched from the wire |
+| `a2a:stream` | a stream lifecycle edge (open / resubscribe / drop / fallback) |
 | `a2a:status` | connectivity changed (mirrors the StatusStore) |
+| `a2a:wire` | a wire exchange summary (opt-in `devtoolsWire`) |
 
 The emission points are deliberately the *change* points — the same edges the
 cache's structural sharing and the broker's entry-tracking already compute —
 so a timeline reads as a causal story, not a poll log.
+
+The wire log is the exception, and that is why it is opt-in: it narrates
+*traffic*, not change (a poll log is exactly what it is). a2aq's wire surface
+is an injected `fetch`, not a `send`/`onmessage` transport, so the core's
+`instrumentTransport` does not apply — `tapFetch` is the fetch-shaped analog,
+emitting per-direction summaries (method, taskId, sizes, status, SSE flag,
+error). Bodies are never dumped and SSE bodies never consumed: the tap must be
+safe to leave on against a live stream. One hub carries both altitudes, so the
+core's `<AgentQueryDevtools>` panel shows intent (task events) and traffic
+(wire) on one timeline.
 
 ## Family rules
 

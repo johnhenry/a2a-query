@@ -28,6 +28,7 @@ import {
 
 import { artifactText as artifactTextOf, artifactsText } from "./artifacts.js";
 import { agentTag, artifactTag, cardTag, serializeA2AKey, taskTag, type A2AKey } from "./keys.js";
+import { tapFetch, type A2AWireSummary } from "./wire.js";
 
 /** The broker decision shape for paused tasks: approve with the follow-up message. */
 export interface InputDecision extends BaseDecision {
@@ -58,7 +59,12 @@ export type A2ADevtoolsEvent =
    */
   | { type: "a2a:stream"; agent: string; taskId: string; phase: "open" | "resubscribe" | "drop" | "fallback" }
   /** The agent's connectivity state changed (mirrors the StatusStore). */
-  | { type: "a2a:status"; agent: string; state: ConnectivityState };
+  | { type: "a2a:status"; agent: string; state: ConnectivityState }
+  /**
+   * A wire-level exchange summary (opt-in via `devtoolsWire`): one event per
+   * direction, bodies summarized (method/taskId/sizes/status), never dumped.
+   */
+  | ({ type: "a2a:wire"; agent: string } & A2AWireSummary);
 
 export interface AgentConfig {
   /** Base URL of the agent (card fetched from /.well-known/agent-card.json by default). */
@@ -111,6 +117,12 @@ export interface A2AQueryConfig {
    * their own entries.
    */
   detachArtifacts?: boolean;
+  /**
+   * Emit `a2a:wire` events to the devtools sink for every fetch exchange
+   * (requests AND responses, summarized — bodies never dumped, SSE bodies
+   * never consumed). Requires `devtools`; default false.
+   */
+  devtoolsWire?: boolean;
 }
 
 /** Paused, non-terminal states a human can resume; terminal states settle handles. */
@@ -167,6 +179,8 @@ export class A2AQuery {
   private resolvers = new Map<string, DefaultAgentCardResolver>();
   /** Per-task artifact ids in arrival order — the listing index for `artifacts()`. */
   private artifactIds = new Map<string, Set<string>>();
+  /** Memoized wire-tapped fetches (one wrapper per agent when devtoolsWire is on). */
+  private wireFetches = new Map<string, typeof fetch>();
   private cfg: A2AQueryConfig;
   private taskPollMs: number;
 
@@ -188,10 +202,11 @@ export class A2AQuery {
     if (!p) {
       const conf = this.cfg.agents[agent];
       if (!conf) throw new Error(`Unknown agent "${agent}"`);
+      const fetchImpl = this.agentFetch(agent, conf);
       const factory = new ClientFactory(
         ClientFactoryOptions.createFrom(ClientFactoryOptions.default, {
-          transports: [new JsonRpcTransportFactory({ fetchImpl: conf.fetchImpl })],
-          cardResolver: new DefaultAgentCardResolver({ fetchImpl: conf.fetchImpl, path: conf.cardPath }),
+          transports: [new JsonRpcTransportFactory({ fetchImpl })],
+          cardResolver: new DefaultAgentCardResolver({ fetchImpl, path: conf.cardPath }),
           // Polling mode: sends return promptly with the (possibly non-terminal)
           // task; the TaskHandle owns the poll loop — the reactive-store model.
           clientConfig: { polling: true },
@@ -229,7 +244,7 @@ export class A2AQuery {
     if (!conf) throw new Error(`Unknown agent "${agent}"`);
     let resolver = this.resolvers.get(agent);
     if (!resolver) {
-      resolver = new DefaultAgentCardResolver({ fetchImpl: conf.fetchImpl, path: conf.cardPath });
+      resolver = new DefaultAgentCardResolver({ fetchImpl: this.agentFetch(agent, conf), path: conf.cardPath });
       this.resolvers.set(agent, resolver);
     }
     const card = await this.attempt(agent, () => resolver.resolve(conf.url, conf.cardPath), true);
@@ -297,6 +312,21 @@ export class A2AQuery {
 
   private emit(e: A2ADevtoolsEvent): void {
     this.cfg.devtools?.emit(e);
+  }
+
+  /**
+   * The agent's effective fetch: the configured `fetchImpl` (or the global
+   * fetch), wire-tapped into `a2a:wire` events when `devtoolsWire` is on.
+   */
+  private agentFetch(agent: string, conf: AgentConfig): typeof fetch | undefined {
+    if (!this.cfg.devtoolsWire || !this.cfg.devtools) return conf.fetchImpl;
+    let tapped = this.wireFetches.get(agent);
+    if (!tapped) {
+      const inner = conf.fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
+      tapped = tapFetch(inner, (e) => this.emit({ type: "a2a:wire", agent, ...e }));
+      this.wireFetches.set(agent, tapped);
+    }
+    return tapped;
   }
 
   // ── messages & tasks ──────────────────────────────────────────────────────

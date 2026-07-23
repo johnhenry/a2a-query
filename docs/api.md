@@ -46,6 +46,7 @@ const q = new A2AQuery({
   devtools: new DevtoolsHub(),            // optional DevtoolsSink (absent = zero emission)
   streaming: "auto",                      // "auto" (default) | true | false — see Streaming
   detachArtifacts: false,                 // true = task snapshots without inline outputs — see Artifacts
+  devtoolsWire: false,                    // true = a2a:wire fetch summaries into the sink — see Devtools
 });
 ```
 
@@ -426,9 +427,54 @@ const q = new A2AQuery({ agents, devtools: hub });
 | `a2a:card-refresh` | `{ agent }` | card refetched from the wire |
 | `a2a:stream` | `{ agent, taskId, phase }` | stream lifecycle edge: `open` \| `resubscribe` \| `drop` \| `fallback` |
 | `a2a:status` | `{ agent, state }` | connectivity state change |
+| `a2a:wire` | `{ agent, dir, method, taskId?, id?, bytes?, status?, streaming?, error? }` | wire exchange summary (opt-in: `devtoolsWire: true`) |
 
 Task states are emitted as enum names (`"TASK_STATE_WORKING"`). See
 `examples/07-devtools-and-resilience.ts` for a full printed timeline.
+
+### Wire log: `devtoolsWire` + `tapFetch`
+
+`devtoolsWire: true` (requires `devtools`) taps each agent's fetch — the
+configured `fetchImpl` or the global fetch — and emits one `a2a:wire` event per
+direction: `dir: "out"` with the JSON-RPC method, request id, the taskId the
+call concerns, and the body size; `dir: "in"` with the HTTP status and a
+`streaming` flag for SSE responses (whose bodies the tap never consumes); a
+rejected fetch emits `error` instead. **Summaries, never body dumps.**
+
+The tap is a2aq's analog of the core's `instrumentTransport` (which wraps
+`send`/`onmessage` transports — a2aq's wire surface is fetch). The wrapper is
+also exported standalone for composing outside a2aq:
+
+```ts
+import { tapFetch, type A2AWireSummary } from "@johnhenry/a2aq";
+const fetchImpl = tapFetch(fetch, (e: A2AWireSummary) => console.log(e));
+```
+
+### The full stack in React
+
+One `DevtoolsHub` carries both altitudes (task events + wire log); the core's
+`<AgentQueryDevtools>` panel renders it alongside the cache, broker queue, and
+status store:
+
+```tsx
+import { A2AQuery, DevtoolsHub, type A2ADevtoolsEvent } from "@johnhenry/a2aq";
+import { AgentQueryDevtools } from "@johnhenry/agent-query-core/react";
+
+const hub = new DevtoolsHub<A2ADevtoolsEvent>();
+const q = new A2AQuery({ agents, devtools: hub, devtoolsWire: true });
+
+export function App() {
+  return (
+    <>
+      {/* …your app… */}
+      <AgentQueryDevtools hub={hub} cache={q.cache} broker={q.interactions} status={q.status} />
+    </>
+  );
+}
+```
+
+See `examples/10-wire-log.ts` for a printed unified timeline (wire + task
+events over a flaky network).
 
 ---
 

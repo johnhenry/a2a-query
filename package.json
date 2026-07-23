@@ -41,7 +41,8 @@
     "example:06": "tsx examples/06-policy-autopilot.ts",
     "example:07": "tsx examples/07-devtools-and-resilience.ts",
     "example:08": "tsx examples/08-streaming.ts",
-    "example:09": "tsx examples/09-artifact-store.ts"
+    "example:09": "tsx examples/09-artifact-store.ts",
+    "example:10": "tsx examples/10-wire-log.ts"
   },
   "dependencies": {
     "@johnhenry/agent-query-core": "0.1.0-rc.3"
