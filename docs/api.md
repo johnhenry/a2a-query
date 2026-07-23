@@ -8,7 +8,7 @@ The complete public surface of `@johnhenry/a2aq`. Conceptual background lives in
   - [Construction](#construction)
   - [`agents()`](#agents)
   - [`card()`](#cardagent--refresh-)
-  - [`sendMessage()`](#sendmessageagent-message)
+  - [`sendMessage()`](#sendmessageagent-message-opts)
   - [`task()`](#taskagent-taskid)
   - [`taskSnapshot()`](#tasksnapshotagent-taskid)
   - [`client()`](#clientagent)
@@ -22,6 +22,7 @@ The complete public surface of `@johnhenry/a2aq`. Conceptual background lives in
 - [Devtools: `devtools` + `A2ADevtoolsEvent`](#devtools)
 - [React hooks: `@johnhenry/a2aq/react`](#react-hooks-johnhenrya2aqreact)
 - [Skills: `sendSkill` + `a2aq-codegen`](#skills-sendskill--a2aq-codegen)
+- [Push notifications: webhooks](#push-notifications-webhooks)
 - [Keys & tags](#keys--tags)
 - [Re-exported core primitives](#re-exported-core-primitives)
 - [Testing: the in-process mock agent](#testing-the-in-process-mock-agent)
@@ -81,11 +82,13 @@ console.log(card.name, card.skills.map((s) => s.name));
 await q.card("travel", { refresh: true });      // force a wire refetch
 ```
 
-### `sendMessage(agent, message)`
+### `sendMessage(agent, message, opts?)`
 
 Send a `Message` (the SDK's ts-proto shape — note the `Part` oneof encoding).
 An A2A agent may answer with a direct `Message` (returned as-is) or a `Task`
-(cached and wrapped in a [`TaskHandle`](#taskhandle)).
+(cached and wrapped in a [`TaskHandle`](#taskhandle)). `opts.push` registers
+a push-notification webhook on the send itself — see
+[Push notifications](#push-notifications-webhooks).
 
 ```ts
 import type { Message } from "@a2a-js/sdk";
@@ -427,6 +430,7 @@ const q = new A2AQuery({ agents, devtools: hub });
 | `a2a:artifact` | `{ agent, taskId, artifactId }` | a new artifact appears on an observed task |
 | `a2a:gate` | `{ agent, taskId, kind: "input" \| "auth", outcome }` | broker gate resolution |
 | `a2a:card-refresh` | `{ agent }` | card refetched from the wire |
+| `a2a:push` | `{ agent, taskId, payload: "task" \| "statusUpdate" \| "artifactUpdate" }` | a pushed (webhook) event folded into the cache |
 | `a2a:stream` | `{ agent, taskId, phase }` | stream lifecycle edge: `open` \| `resubscribe` \| `drop` \| `fallback` |
 | `a2a:status` | `{ agent, state }` | connectivity state change |
 | `a2a:wire` | `{ agent, dir, method, taskId?, id?, bytes?, status?, streaming?, error? }` | wire exchange summary (opt-in: `devtoolsWire: true`) |
@@ -630,6 +634,83 @@ golden-file tests. Generated output is check-in friendly: regenerate and
 diff, like any orval-style client.
 
 See `examples/11-skill-codegen.ts`.
+
+---
+
+## Push notifications: webhooks
+
+A2A's disconnected-client story: instead of holding a poll loop or a stream
+open, register a webhook and let the agent POST task updates to you. a2aq
+wires both halves.
+
+### Registering (client side)
+
+```ts
+// On the send itself — rides configuration.taskPushNotificationConfig,
+// no second round-trip (spec: taskId stays empty on this path):
+const handle = await q.sendMessage("worker", message, {
+  push: { url: "https://app.example/hooks/worker", token: SECRET },
+});
+
+// For an EXISTING task — the CreateTaskPushNotificationConfig RPC:
+await q.registerPush("worker", taskId, { url, token: SECRET, id: "cfg-1" });
+```
+
+Both require the agent card to advertise `capabilities.pushNotifications`
+(the SDK server drops on-send configs and rejects the RPC without it) —
+treat pushes as an *addition* to polling/streaming, not a replacement.
+`registerPush` retries under the `retry` policy only when you pass a fixed
+`id` (an empty id would mint a duplicate config per attempt).
+
+### Receiving: `createWebhookHandler(q, { agent, token?, reconcile? })`
+
+A transport-agnostic `(req: Request) => Promise<Response>` over the web
+standards — mount it in anything that speaks fetch (Node adapters, Hono,
+Workers, Deno, Bun). One handler per agent; route by path.
+
+```ts
+const handler = createWebhookHandler(q, { agent: "worker", token: SECRET });
+// e.g. Bun/Deno/Workers:  serve({ "/hooks/worker": handler })
+```
+
+Per POST it: validates the token (`X-A2A-Notification-Token` or
+`Authorization: Bearer`; 401 on mismatch — always set one outside tests),
+parses the SDK sender's wire shape (a `StreamResponse` JSON: task /
+statusUpdate / artifactUpdate / message; a bare Task snapshot is tolerated),
+folds it via `q.ingestPush` into the **same cache entries** the poll/stream
+drivers write (task snapshots, artifact mirror entries, `a2a:push` devtools
+events), and then — **family rule** — follows with a full `getTask`
+reconcile, because pushes can arrive out of order, duplicated, or with gaps.
+A stale `WORKING` arriving after `COMPLETED` is healed by that read.
+Responses: `200` folded, `202` accepted-but-ignored (standalone message),
+`400` unparseable, `401` bad token, `405` not a POST. Set
+`reconcile: false` only when something else already reconciles the task.
+
+`q.ingestPush(agent, streamResponse)` is exported on its own for custom
+receivers (queues, batched deliveries): it is the raw fold — no auth, no
+reconcile — returning the touched taskId.
+
+### Testing / honesty
+
+The SDK's server stack really does send pushes (`DefaultRequestHandler` +
+`InMemoryPushNotificationStore` + `DefaultPushNotificationSender`), but its
+sender dispatches with **global fetch** — no injection seam. The mock agent
+therefore takes `pushDelivery: (req: Request) => Response | Promise<Response>`
+and dispatches through an in-process sender that reuses the SDK's own
+`V1PushNotificationSerializer` (`application/a2a+json`, token in
+`X-A2A-Notification-Token`) — identical wire shape, injected transport. Hand
+it your handler and the loop closes with no sockets:
+
+```ts
+let handler!: (req: Request) => Promise<Response>;
+const mock = new MockA2AAgent(echoExecutor(), { pushDelivery: (req) => handler(req) });
+const q = new A2AQuery({ agents: { worker: { url: mock.url, fetchImpl: mock.fetchImpl } } });
+handler = createWebhookHandler(q, { agent: "worker", token: "t" });
+mock.pushStore; // inspect registered configs
+```
+
+See `examples/12-push-webhook.ts` — a receiver that never sends or polls,
+converging to the completed task purely from pushes.
 
 ---
 

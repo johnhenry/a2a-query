@@ -3,15 +3,18 @@
 // so tests exercise the real wire codec with no sockets. Provide an AgentExecutor
 // (the SDK server contract) or use the helpers below.
 
-import { TaskState, type AgentCard } from "@a2a-js/sdk";
+import { TaskState, type AgentCard, type StreamResponse } from "@a2a-js/sdk";
 import {
   AgentEvent,
   DefaultRequestHandler,
+  InMemoryPushNotificationStore,
   InMemoryTaskStore,
   JsonRpcTransportHandler,
   ServerCallContext,
+  V1PushNotificationSerializer,
   type AgentExecutor,
   type ExecutionEventBus,
+  type PushNotificationSender,
   type RequestContext,
 } from "@a2a-js/sdk/server";
 
@@ -21,6 +24,53 @@ export interface MockA2AAgentOptions {
   name?: string;
   url?: string;
   card?: Partial<AgentCard>;
+  /**
+   * Enable push notifications: the card advertises
+   * `capabilities.pushNotifications` and every execution event is dispatched
+   * to each registered webhook config as a POST `Request` — serialized by the
+   * SDK's own `V1PushNotificationSerializer` (`application/a2a+json`, token in
+   * `X-A2A-Notification-Token`) — delivered to THIS function instead of the
+   * network. The SDK's real `DefaultPushNotificationSender` uses global
+   * `fetch` with no injection seam, so in-process tests swap the transport at
+   * this boundary; the wire shape is identical.
+   */
+  pushDelivery?: (req: Request) => Promise<Response> | Response;
+}
+
+/** The taskId a StreamResponse concerns ("" for standalone messages ⇒ no dispatch). */
+function pushTaskIdOf(ev: StreamResponse): string {
+  switch (ev.payload?.$case) {
+    case "task":
+      return ev.payload.value.id;
+    case "statusUpdate":
+    case "artifactUpdate":
+      return ev.payload.value.taskId;
+    default:
+      return "";
+  }
+}
+
+/** In-process stand-in for DefaultPushNotificationSender — same payloads, injected delivery. */
+class InProcessPushSender implements PushNotificationSender {
+  private serializer = new V1PushNotificationSerializer();
+  constructor(
+    private store: InMemoryPushNotificationStore,
+    private deliver: (req: Request) => Promise<Response> | Response,
+  ) {}
+  async send(streamResponse: StreamResponse, context: ServerCallContext): Promise<void> {
+    const taskId = pushTaskIdOf(streamResponse);
+    if (!taskId) return;
+    for (const cfg of await this.store.load(taskId, context)) {
+      const { body, contentType } = this.serializer.serialize(streamResponse);
+      const headers: Record<string, string> = { "content-type": contentType };
+      if (cfg.token) headers["x-a2a-notification-token"] = cfg.token;
+      try {
+        await this.deliver(new Request(cfg.url, { method: "POST", headers, body }));
+      } catch {
+        // The real sender logs and moves on — a webhook must never fail the task.
+      }
+    }
+  }
 }
 
 export class MockA2AAgent {
@@ -29,6 +79,8 @@ export class MockA2AAgent {
   callLog: Array<{ method: string; params: unknown }> = [];
   /** The server's task store — inspect or (via setTaskState) mutate task state out-of-band. */
   readonly store: InMemoryTaskStore;
+  /** The server's push-config store — inspect registered webhook configs. */
+  readonly pushStore: InMemoryPushNotificationStore;
   private handler: JsonRpcTransportHandler;
 
   constructor(executor: AgentExecutor, opts: MockA2AAgentOptions = {}) {
@@ -45,9 +97,20 @@ export class MockA2AAgent {
       skills: [],
       ...opts.card,
     } as AgentCard;
+    if (opts.pushDelivery && !this.card.capabilities?.pushNotifications) {
+      this.card.capabilities = { ...this.card.capabilities, pushNotifications: true } as AgentCard["capabilities"];
+    }
     this.store = new InMemoryTaskStore();
+    this.pushStore = new InMemoryPushNotificationStore();
     this.handler = new JsonRpcTransportHandler(
-      new DefaultRequestHandler(this.card, this.store, executor),
+      new DefaultRequestHandler(
+        this.card,
+        this.store,
+        executor,
+        undefined,
+        this.pushStore,
+        opts.pushDelivery ? new InProcessPushSender(this.pushStore, opts.pushDelivery) : undefined,
+      ),
     );
   }
 

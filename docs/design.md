@@ -219,6 +219,7 @@ JSON-serializable events (no live objects; task states as enum names):
 | `a2a:artifact` | a new artifact appeared on an observed task |
 | `a2a:gate` | the broker resolved a pause gate (`kind` input/auth, `outcome` approve/deny) |
 | `a2a:card-refresh` | the agent card was refetched from the wire |
+| `a2a:push` | a pushed (webhook) event was folded into the cache |
 | `a2a:stream` | a stream lifecycle edge (open / resubscribe / drop / fallback) |
 | `a2a:status` | connectivity changed (mirrors the StatusStore) |
 | `a2a:wire` | a wire exchange summary (opt-in `devtoolsWire`) |
@@ -277,6 +278,30 @@ Two deliberate choices:
   the `/react` subpath does. Non-React consumers keep a react-free module
   graph, and the hooks live in the same package so they can never drift from
   the store's semantics.
+
+## Pushes are hints; reads are truth
+
+The webhook adapter extends the reconcile rule to a third driver. Poll,
+stream, push — three transports, ONE application step: everything funnels
+into the same task snapshot + artifact mirror writes (`ingestPush` mirrors
+the stream driver's fold exactly: status over the snapshot with artifacts
+reassembled from their entries; artifact chunks merged against the mirror
+entry). What pushes add is a delivery channel a2aq doesn't control: HTTP
+POSTs with no ordering guarantee, retried by senders, dropped by networks.
+So the handler treats every push as a *hint* — fold it for latency, then do
+a full `getTask` and let server truth win. The out-of-order case (a stale
+`WORKING` landing after `COMPLETED`) is the canonical test: the fold briefly
+regresses the snapshot, the reconcile immediately heals it, and subscribers
+see truth.
+
+Two boundary decisions worth noting. The handler is `(Request) => Response`
+over web standards rather than an Express/Hono/Node binding — the narrowest
+interface every runtime already speaks, so a2aq takes no server-framework
+dependency for one endpoint. And in-process testing swaps the SDK sender's
+*transport*, not its *payloads*: the mock's push path reuses the SDK's own
+`V1PushNotificationSerializer`, so what the tests parse is byte-for-byte
+what a production `DefaultPushNotificationSender` would POST (its only
+unmockable choice is dispatching via global fetch).
 
 ## Skill codegen: honest about what the card declares
 

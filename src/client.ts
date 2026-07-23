@@ -5,7 +5,15 @@
 // TaskHandles, and an approval broker for the protocol's paused task states
 // (INPUT_REQUIRED / AUTH_REQUIRED — first-class human-in-the-loop resume points).
 
-import { TaskState, type AgentCard, type Artifact, type Message, type StreamResponse, type Task } from "@a2a-js/sdk";
+import {
+  TaskState,
+  type AgentCard,
+  type Artifact,
+  type Message,
+  type StreamResponse,
+  type Task,
+  type TaskPushNotificationConfig,
+} from "@a2a-js/sdk";
 import {
   Client,
   ClientFactory,
@@ -52,6 +60,8 @@ export type A2ADevtoolsEvent =
   | { type: "a2a:gate"; agent: string; taskId: string; kind: "input" | "auth"; outcome: "approve" | "deny" }
   /** The agent card was refetched from the wire. */
   | { type: "a2a:card-refresh"; agent: string }
+  /** A pushed (webhook) event was folded into the cache. */
+  | { type: "a2a:push"; agent: string; taskId: string; payload: "task" | "statusUpdate" | "artifactUpdate" }
   /**
    * A streaming lifecycle edge for an observed task: the initial send stream
    * opened, a resubscribe (re)attached, the stream dropped mid-flight, or the
@@ -123,6 +133,33 @@ export interface A2AQueryConfig {
    * never consumed). Requires `devtools`; default false.
    */
   devtoolsWire?: boolean;
+}
+
+/**
+ * A webhook registration, client-side view: where the agent should POST task
+ * updates, and the token it must echo back (`X-A2A-Notification-Token`) so
+ * the receiver can authenticate the push. `id` names the config for later
+ * get/delete; empty ⇒ the server assigns one.
+ */
+export interface PushConfigInit {
+  /** The webhook URL the agent POSTs task updates to. */
+  url: string;
+  /** Per-task/session token the agent echoes back — the receiver's auth check. */
+  token?: string;
+  /** Config id (server assigns one when empty). */
+  id?: string;
+}
+
+export interface SendOptions {
+  /**
+   * Register a push-notification webhook for the task this send creates
+   * (rides the send itself via `configuration.taskPushNotificationConfig` —
+   * no second round-trip; the A2A spec wants `taskId` empty on this path).
+   * Requires the agent card to advertise `capabilities.pushNotifications`;
+   * agents without it silently ignore the config (the SDK server drops it),
+   * so pair registration with polling/streaming rather than replacing them.
+   */
+  push?: PushConfigInit;
 }
 
 /** Paused, non-terminal states a human can resume; terminal states settle handles. */
@@ -341,9 +378,9 @@ export class A2AQuery {
    * messageId IS the idempotency key: an agent that already processed the id
    * can dedupe the duplicate delivery, which is what makes retrying a send safe.
    */
-  async sendMessage(agent: string, message: Message): Promise<Message | TaskHandle> {
+  async sendMessage(agent: string, message: Message, opts: SendOptions = {}): Promise<Message | TaskHandle> {
     const outbound: Message = message.messageId ? message : { ...message, messageId: newMessageId() };
-    const params = { tenant: "", message: outbound, configuration: undefined, metadata: undefined };
+    const params = { tenant: "", message: outbound, configuration: sendConfiguration(opts), metadata: undefined };
     // One retried closure covers BOTH modes: a failed stream open is re-attempted
     // whole (fresh generator, same messageId — the dedupe key), exactly like a
     // failed unary send.
@@ -489,6 +526,93 @@ export class A2AQuery {
       ids.delete(id);
     }
     if (ids.size === 0) this.artifactIds.delete(indexKey);
+  }
+
+  // ── push notifications ────────────────────────────────────────────────────
+  /**
+   * Register a webhook for an EXISTING task via the
+   * `CreateTaskPushNotificationConfig` RPC (for new tasks, prefer
+   * `sendMessage(..., { push })` — it rides the send). Requires the agent to
+   * advertise `capabilities.pushNotifications` (the SDK server rejects the
+   * RPC otherwise). Retried under the `retry` policy only when `cfg.id` is
+   * caller-set (a fixed id makes re-creation idempotent; an empty id would
+   * mint a duplicate config per attempt).
+   */
+  async registerPush(agent: string, taskId: string, cfg: PushConfigInit): Promise<TaskPushNotificationConfig> {
+    const created = await this.attempt(
+      agent,
+      async () => {
+        const client = await this.client(agent);
+        return client.createTaskPushNotificationConfig({
+          tenant: "",
+          id: cfg.id ?? "",
+          taskId,
+          url: cfg.url,
+          token: cfg.token ?? "",
+          authentication: undefined,
+        });
+      },
+      cfg.id !== undefined, // fixed id ⇒ idempotent re-create; empty id would mint duplicates
+    );
+    this.markReady(agent);
+    return created;
+  }
+
+  /**
+   * Fold one pushed event (a webhook body) into the SAME cache entries the
+   * poll and stream drivers write — task snapshots, artifact mirror entries,
+   * `a2a:push` devtools events. Returns the touched taskId (undefined for
+   * standalone messages, which carry no task state). This is the raw fold;
+   * `createWebhookHandler` wraps it with auth + the family-rule getTask
+   * reconcile (pushes can arrive out of order or duplicated — never treat
+   * the fold as authoritative).
+   */
+  ingestPush(agent: string, ev: StreamResponse): string | undefined {
+    const p = ev.payload;
+    if (!p) return undefined;
+    const current = (taskId: string): Task =>
+      (this.cache.getSnapshot({ kind: "task", agent, taskId })?.data as Task | undefined) ?? {
+        // First contact via push (a disconnected receiver): a minimal shell
+        // the reconcile read replaces with server truth.
+        id: taskId,
+        contextId: "",
+        status: undefined,
+        artifacts: [],
+        history: [],
+        metadata: undefined,
+      };
+    switch (p.$case) {
+      case "task":
+        this.writeTask(agent, p.value);
+        this.emit({ type: "a2a:push", agent, taskId: p.value.id, payload: "task" });
+        return p.value.id;
+      case "statusUpdate": {
+        const { taskId } = p.value;
+        if (!taskId) return undefined;
+        const cur = current(taskId);
+        // Same fold as the stream driver: status over the snapshot, artifacts
+        // reassembled from their entries (the canonical copy).
+        const artifacts = this.cfg.detachArtifacts ? [] : this.artifacts(agent, taskId);
+        this.writeTask(agent, { ...cur, status: p.value.status ?? cur.status, artifacts });
+        this.emit({ type: "a2a:push", agent, taskId, payload: "statusUpdate" });
+        return taskId;
+      }
+      case "artifactUpdate": {
+        const { taskId, artifact: incoming } = p.value;
+        if (!taskId || !incoming) return taskId || undefined;
+        const existing = this.artifact(agent, taskId, incoming.artifactId);
+        const merged =
+          existing && p.value.append ? { ...incoming, parts: [...existing.parts, ...incoming.parts] } : incoming;
+        const list = this.artifacts(agent, taskId);
+        const at = list.findIndex((a) => a.artifactId === merged.artifactId);
+        const artifacts = at < 0 ? [...list, merged] : list.map((a, i) => (i === at ? merged : a));
+        this.writeTask(agent, { ...current(taskId), artifacts });
+        this.emit({ type: "a2a:push", agent, taskId, payload: "artifactUpdate" });
+        return taskId;
+      }
+      case "message":
+        return undefined; // agent chatter — no task state to fold
+    }
   }
 
   private makeHandle(
@@ -838,6 +962,33 @@ export class A2AQuery {
       },
     };
   }
+}
+
+/**
+ * The send configuration for optional per-send features (today: push
+ * registration). Undefined when no feature is engaged — the SDK client then
+ * applies its own defaults untouched.
+ */
+function sendConfiguration(opts: SendOptions) {
+  if (!opts.push) return undefined;
+  return {
+    acceptedOutputModes: [],
+    // Per spec, taskId stays empty when the config rides a SendMessage.
+    taskPushNotificationConfig: {
+      tenant: "",
+      id: opts.push.id ?? "",
+      taskId: "",
+      url: opts.push.url,
+      token: opts.push.token ?? "",
+      authentication: undefined,
+    },
+    historyLength: undefined,
+    // Matches the SDK client's polling mode (clientConfig.polling = true).
+    // The client only fills this field when unset (`??=`), so it must be
+    // explicit here — a default `false` would flip the send into blocking
+    // mode and stall until the task settles.
+    returnImmediately: true,
+  };
 }
 
 /** Text of the message attached to a task's status, if any (server error detail). */

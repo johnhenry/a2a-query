@@ -1,7 +1,17 @@
 // @johnhenry/a2aq — reactive, cached, embeddable A2A client for non-agentic apps.
 
 export { A2AQuery } from "./client.js";
-export type { A2ADevtoolsEvent, A2AQueryConfig, AgentConfig, InputDecision, TaskHandle } from "./client.js";
+export type {
+  A2ADevtoolsEvent,
+  A2AQueryConfig,
+  AgentConfig,
+  InputDecision,
+  PushConfigInit,
+  SendOptions,
+  TaskHandle,
+} from "./client.js";
+export { createWebhookHandler } from "./webhook.js";
+export type { WebhookHandlerOptions } from "./webhook.js";
 export { serializeA2AKey, cardTag, taskTag, artifactTag, agentTag } from "./keys.js";
 export type { A2AKey } from "./keys.js";
 export { partText, artifactText, artifactsText } from "./artifacts.js";
