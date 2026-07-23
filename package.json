@@ -1,6 +1,6 @@
 {
   "name": "@johnhenry/a2aq",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0-rc.2",
   "description": "Reactive, cached, embeddable A2A client for non-agentic apps — agent-card registry, task-handle store, approval broker. TanStack-Query-style, on the official @a2a-js/sdk.",
   "repository": {
     "type": "git",
