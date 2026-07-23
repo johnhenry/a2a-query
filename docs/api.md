@@ -16,6 +16,7 @@ The complete public surface of `@johnhenry/a2aq`. Conceptual background lives in
   - [`status`](#status)
 - [`TaskHandle`](#taskhandle)
 - [Streaming: `streaming` config + lifecycle](#streaming)
+- [Artifacts: entries, accessors, text, eviction](#artifacts)
 - [Human-in-the-loop: `interactions` + `InputDecision`](#human-in-the-loop)
 - [Resilience: `retry` + idempotency](#resilience-retry--idempotency)
 - [Devtools: `devtools` + `A2ADevtoolsEvent`](#devtools)
@@ -44,6 +45,7 @@ const q = new A2AQuery({
   retry: { retries: 3 },                  // optional RetryPolicy (absent = single attempt)
   devtools: new DevtoolsHub(),            // optional DevtoolsSink (absent = zero emission)
   streaming: "auto",                      // "auto" (default) | true | false — see Streaming
+  detachArtifacts: false,                 // true = task snapshots without inline outputs — see Artifacts
 });
 ```
 
@@ -189,6 +191,9 @@ interface TaskHandle {
   result(): Promise<Task>;                        // resolves on COMPLETED; rejects on FAILED/REJECTED/CANCELED
   respond(message: Message): Promise<void>;       // resume a paused task
   cancel(): Promise<void>;                        // ask the agent to cancel
+  artifacts(): Artifact[];                        // from the artifact entries (see Artifacts)
+  artifact(artifactId: string): Artifact | undefined;
+  artifactText(artifactId?: string): string;      // text-part convenience
 }
 ```
 
@@ -257,6 +262,63 @@ await handle.result();                      // same terminal semantics as pollin
 ```
 
 See `examples/08-streaming.ts` for the full drop → resubscribe → reconcile run.
+
+---
+
+## Artifacts
+
+Every observed task write mirrors its artifacts into their own cache entries —
+`{ kind: "artifact", agent, taskId, artifactId }`, tagged
+`[artifactTag, taskTag, agentTag]` — so large outputs are individually
+readable, subscribable, and evictable.
+
+**Accessors** (all synchronous cache reads, no wire calls):
+
+```ts
+q.artifacts(agent, taskId);                     // Artifact[] — arrival order
+q.artifact(agent, taskId, artifactId);          // Artifact | undefined
+q.artifactSnapshot(agent, taskId, artifactId);  // raw CacheEntry (subscribe-ready)
+
+handle.artifacts();                             // same, scoped to the handle's task
+handle.artifact("out");
+handle.artifactText();                          // all artifacts' text, newline-joined
+handle.artifactText("out");                     // one artifact's text parts, concatenated
+```
+
+**Reactive reads** — artifact entries are ordinary cache entries; subscribe to
+the structured key (streamed `append` chunks emit once per merge):
+
+```ts
+const key = { kind: "artifact", agent, taskId, artifactId: "out" } as const;
+const unsub = q.cache.subscribe(key, () => render(q.artifact(agent, taskId, "out")));
+```
+
+**Text extraction** — standalone helpers over the ts-proto `Part` oneofs
+(`content: { $case: "text", value }`), exported from the package root:
+
+```ts
+import { partText, artifactText, artifactsText } from "@johnhenry/a2aq";
+partText(part);                 // string | undefined (non-text parts → undefined)
+artifactText(artifact);         // text parts concatenated
+artifactsText(artifacts, "\n"); // across artifacts, separator configurable
+```
+
+**`detachArtifacts: true`** stores task snapshots WITHOUT the inline
+`artifacts` list (empty array) — outputs live only in the artifact entries and
+`handle.artifacts()` / `artifactText()` reassemble them. Task entries stay
+lean no matter how big the outputs get; note `result()`/`task()` then return
+artifact-less tasks by design.
+
+**Eviction** — reclaim consumed outputs; the task snapshot survives:
+
+```ts
+q.evictArtifacts(agent, taskId);          // all of a task's artifact entries
+q.evictArtifacts(agent, taskId, "out");   // one
+```
+
+A still-observed task re-mirrors artifacts on its next write; evict after
+settling (or pair with `detachArtifacts` for one-copy storage). See
+`examples/09-artifact-store.ts`.
 
 ---
 
@@ -377,7 +439,8 @@ Structured cache keys, serialized canonically:
 ```ts
 type A2AKey =
   | { kind: "card"; agent: string }
-  | { kind: "task"; agent: string; taskId: string; partition?: string };
+  | { kind: "task"; agent: string; taskId: string; partition?: string }
+  | { kind: "artifact"; agent: string; taskId: string; artifactId: string; partition?: string };
 
 serializeA2AKey({ kind: "card", agent: "travel" }); // '["card","travel"]'
 ```
@@ -385,14 +448,17 @@ serializeA2AKey({ kind: "card", agent: "travel" }); // '["card","travel"]'
 Tags are the invalidation currency:
 
 ```ts
-cardTag("travel");          // "card:travel"        — one agent's card
-taskTag("travel", taskId);  // "task:travel:<id>"   — one task
-agentTag("travel");         // "agent:travel"       — everything from one agent
+cardTag("travel");                    // "card:travel"             — one agent's card
+taskTag("travel", taskId);            // "task:travel:<id>"        — one task
+artifactTag("travel", taskId, "out"); // "artifact:travel:<id>:out" — one artifact
+agentTag("travel");                   // "agent:travel"            — everything from one agent
 ```
 
 Every card write carries `[cardTag, agentTag]`; every task write carries
-`[taskTag, agentTag]`. So `invalidateTags([agentTag(name)])` is the blunt
-"reconnect/removed this agent" hammer, and the finer tags are surgical.
+`[taskTag, agentTag]`; every artifact write carries
+`[artifactTag, taskTag, agentTag]`. So `invalidateTags([agentTag(name)])` is
+the blunt "reconnect/removed this agent" hammer, and the finer tags are
+surgical (a task's tag reaches its artifacts too).
 
 ---
 

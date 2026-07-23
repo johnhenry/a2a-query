@@ -35,12 +35,21 @@ Nothing is forked: a2aq holds real SDK `Client`s and the escape hatch
 
 ## Keys & tags: the cache vocabulary
 
-Two kinds of entries, structured keys, canonical serialization:
+Three kinds of entries, structured keys, canonical serialization:
 
 ```
-{ kind: "card", agent }                      tags: card:<agent>, agent:<agent>
-{ kind: "task", agent, taskId, partition? }  tags: task:<agent>:<id>, agent:<agent>
+{ kind: "card", agent }                                  tags: card:<agent>, agent:<agent>
+{ kind: "task", agent, taskId, partition? }              tags: task:<agent>:<id>, agent:<agent>
+{ kind: "artifact", agent, taskId, artifactId, partition? }
+                                 tags: artifact:<agent>:<task>:<id>, task:<agent>:<task>, agent:<agent>
 ```
+
+Artifacts get their own entries (mirrored on every task write; the ONLY copy
+under `detachArtifacts`) because task outputs and task state have different
+lifecycles: outputs can be huge, are consumed rather than watched, and want
+individual eviction — while the task snapshot stays small and long-lived. The
+artifact entry carries its task's tag, so task-level invalidation reaches the
+outputs for free.
 
 Design rules, inherited from the family:
 

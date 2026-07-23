@@ -56,6 +56,7 @@ if (typeof handle === "object" && "result" in handle) {
 | `npm run example:06` | Policy autopilot — `allow` auto-clears, `deny` blocks (task stays parked) |
 | `npm run example:07` | Devtools & resilience — flaky network + retry policy, status transitions, event timeline |
 | `npm run example:08` | Streaming — SSE-driven handle, mid-stream drop → degraded → resubscribe (+ family-rule reconcile) → poll fallback |
+| `npm run example:09` | Artifact store — artifact-kind cache entries, reactive chunk reads, `detachArtifacts`, eviction |
 
 Status: post-1.0 A2A, `@a2a-js/sdk@1.0.0` pinned exact. Streaming
 (`sendMessageStream`/`resubscribeTask`) is in. Webhook push notifications,

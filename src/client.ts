@@ -5,7 +5,7 @@
 // TaskHandles, and an approval broker for the protocol's paused task states
 // (INPUT_REQUIRED / AUTH_REQUIRED — first-class human-in-the-loop resume points).
 
-import { TaskState, type AgentCard, type Message, type StreamResponse, type Task } from "@a2a-js/sdk";
+import { TaskState, type AgentCard, type Artifact, type Message, type StreamResponse, type Task } from "@a2a-js/sdk";
 import {
   Client,
   ClientFactory,
@@ -26,7 +26,8 @@ import {
   type RetryPolicy,
 } from "@johnhenry/agent-query-core";
 
-import { agentTag, cardTag, serializeA2AKey, taskTag, type A2AKey } from "./keys.js";
+import { artifactText as artifactTextOf, artifactsText } from "./artifacts.js";
+import { agentTag, artifactTag, cardTag, serializeA2AKey, taskTag, type A2AKey } from "./keys.js";
 
 /** The broker decision shape for paused tasks: approve with the follow-up message. */
 export interface InputDecision extends BaseDecision {
@@ -102,6 +103,14 @@ export interface A2AQueryConfig {
    * falling back to the poll loop when resubscription fails.
    */
   streaming?: boolean | "auto";
+  /**
+   * Store task snapshots WITHOUT their inline `artifacts` (large outputs live
+   * only under their own `{ kind: "artifact" }` cache entries, readable via the
+   * artifact accessors and individually evictable). Default false: task
+   * snapshots keep the server-truth inline list AND artifacts are mirrored to
+   * their own entries.
+   */
+  detachArtifacts?: boolean;
 }
 
 /** Paused, non-terminal states a human can resume; terminal states settle handles. */
@@ -126,6 +135,15 @@ export interface TaskHandle {
   respond(message: Message): Promise<void>;
   /** Ask the agent to cancel this task. */
   cancel(): Promise<void>;
+  /** The task's artifacts, from their own cache entries (works with `detachArtifacts`). */
+  artifacts(): Artifact[];
+  /** One artifact by id, from its own cache entry. */
+  artifact(artifactId: string): Artifact | undefined;
+  /**
+   * Text convenience over the Part oneofs: with an id, that artifact's text
+   * parts concatenated; without, every artifact's text joined by newlines.
+   */
+  artifactText(artifactId?: string): string;
 }
 
 /** Client-side message id — fixed before the first attempt so retries reuse it. */
@@ -134,6 +152,9 @@ const newMessageId = (): string => crypto.randomUUID();
 const asError = (err: unknown): Error => (err instanceof Error ? err : new Error(String(err)));
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Collision-safe map key for the per-task artifact-id index. */
+const artifactIndexKey = (agent: string, taskId: string): string => JSON.stringify([agent, taskId]);
 
 const stateName = (state: TaskState): string => TaskState[state] ?? String(state);
 
@@ -144,6 +165,8 @@ export class A2AQuery {
   readonly status: StatusStore;
   private clients = new Map<string, Promise<Client>>();
   private resolvers = new Map<string, DefaultAgentCardResolver>();
+  /** Per-task artifact ids in arrival order — the listing index for `artifacts()`. */
+  private artifactIds = new Map<string, Set<string>>();
   private cfg: A2AQueryConfig;
   private taskPollMs: number;
 
@@ -378,10 +401,64 @@ export class A2AQuery {
   }
 
   private writeTask(agent: string, task: Task): void {
-    this.cache.write({ kind: "task", agent, taskId: task.id }, task, {
+    // Artifacts are mirrored to their own entries on every task write —
+    // artifact-kind keys are the accessor/eviction surface either way.
+    for (const artifact of task.artifacts ?? []) this.writeArtifact(agent, task.id, artifact);
+    const data = this.cfg.detachArtifacts ? { ...task, artifacts: [] } : task;
+    this.cache.write({ kind: "task", agent, taskId: task.id }, data, {
       tags: [taskTag(agent, task.id), agentTag(agent)],
       staleTime: this.taskPollMs,
     });
+  }
+
+  private writeArtifact(agent: string, taskId: string, artifact: Artifact): void {
+    const indexKey = artifactIndexKey(agent, taskId);
+    let ids = this.artifactIds.get(indexKey);
+    if (!ids) this.artifactIds.set(indexKey, (ids = new Set()));
+    ids.add(artifact.artifactId);
+    this.cache.write({ kind: "artifact", agent, taskId, artifactId: artifact.artifactId }, artifact, {
+      tags: [artifactTag(agent, taskId, artifact.artifactId), taskTag(agent, taskId), agentTag(agent)],
+    });
+  }
+
+  // ── artifacts ─────────────────────────────────────────────────────────────
+  /** A task's artifacts, read from their own cache entries (insertion order). */
+  artifacts(agent: string, taskId: string): Artifact[] {
+    const ids = this.artifactIds.get(artifactIndexKey(agent, taskId));
+    if (!ids) return [];
+    const out: Artifact[] = [];
+    for (const artifactId of ids) {
+      const a = this.cache.getSnapshot({ kind: "artifact", agent, taskId, artifactId })?.data as Artifact | undefined;
+      if (a) out.push(a);
+    }
+    return out;
+  }
+
+  /** One artifact by id, from its own cache entry. */
+  artifact(agent: string, taskId: string, artifactId: string): Artifact | undefined {
+    return this.cache.getSnapshot({ kind: "artifact", agent, taskId, artifactId })?.data as Artifact | undefined;
+  }
+
+  /** The raw cache entry for an artifact — subscribe to it for reactive reads. */
+  artifactSnapshot(agent: string, taskId: string, artifactId: string): CacheEntry<unknown, A2AKey> | undefined {
+    return this.cache.getSnapshot({ kind: "artifact", agent, taskId, artifactId });
+  }
+
+  /**
+   * Evict a task's artifact entries (one, or all of them) — reclaim large
+   * outputs after consuming them. The task snapshot itself stays. Note a still-
+   * observed task re-mirrors artifacts on its next write; eviction is for
+   * settled tasks (or pair it with `detachArtifacts` for one-copy storage).
+   */
+  evictArtifacts(agent: string, taskId: string, artifactId?: string): void {
+    const indexKey = artifactIndexKey(agent, taskId);
+    const ids = this.artifactIds.get(indexKey);
+    if (!ids) return;
+    for (const id of artifactId ? [artifactId] : [...ids]) {
+      this.cache.remove({ kind: "artifact", agent, taskId, artifactId: id });
+      ids.delete(id);
+    }
+    if (ids.size === 0) this.artifactIds.delete(indexKey);
   }
 
   private makeHandle(
@@ -418,7 +495,9 @@ export class A2AQuery {
         lastEmittedState = state;
         this.emit({ type: "a2a:task-status", agent, taskId: task.id, state: stateName(state) });
       }
-      for (const artifact of task.artifacts ?? []) {
+      // Artifact entries are the canonical listing (inline task.artifacts is
+      // empty under detachArtifacts); at observe() time they are already mirrored.
+      for (const artifact of this.artifacts(agent, task.id)) {
         const id = artifact.artifactId;
         if (id && !seenArtifacts.has(id)) {
           seenArtifacts.add(id);
@@ -551,14 +630,15 @@ export class A2AQuery {
         case "artifactUpdate": {
           const incoming = p.value.artifact;
           if (!incoming) return settled;
-          const cur = currentTask();
-          const artifacts = [...(cur.artifacts ?? [])];
-          const at = artifacts.findIndex((a) => a.artifactId === incoming.artifactId);
-          const existing = at >= 0 ? artifacts[at] : undefined;
-          if (!existing) artifacts.push(incoming);
-          else if (p.value.append) artifacts[at] = { ...incoming, parts: [...existing.parts, ...incoming.parts] };
-          else artifacts[at] = incoming;
-          return applyTask({ ...cur, artifacts });
+          // Merge against the artifact ENTRY (the canonical copy — inline task
+          // artifacts are empty under detachArtifacts), then upsert in place.
+          const existing = this.artifact(agent, seed.id, incoming.artifactId);
+          const merged =
+            existing && p.value.append ? { ...incoming, parts: [...existing.parts, ...incoming.parts] } : incoming;
+          const list = this.artifacts(agent, seed.id);
+          const at = list.findIndex((a) => a.artifactId === merged.artifactId);
+          const artifacts = at < 0 ? [...list, merged] : list.map((a, i) => (i === at ? merged : a));
+          return applyTask({ ...currentTask(), artifacts });
         }
         case "message":
           return settled; // agent chatter mid-stream — not task state
@@ -690,6 +770,15 @@ export class A2AQuery {
       result: () => {
         ensureLoop();
         return result;
+      },
+      artifacts: () => this.artifacts(agent, seed.id),
+      artifact: (artifactId: string) => this.artifact(agent, seed.id, artifactId),
+      artifactText: (artifactId?: string) => {
+        if (artifactId !== undefined) {
+          const a = this.artifact(agent, seed.id, artifactId);
+          return a ? artifactTextOf(a) : "";
+        }
+        return artifactsText(this.artifacts(agent, seed.id));
       },
       respond,
       cancel: async () => {
