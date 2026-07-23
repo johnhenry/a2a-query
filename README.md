@@ -37,6 +37,19 @@ if (typeof handle === "object" && "result" in handle) {
 }
 ```
 
+## Demo
+
+**[demo/](./demo)** — the flagship demo: a multi-agent task dashboard with an
+approval inbox, running entirely in-browser against four in-process mock A2A
+agents (streaming researcher, `INPUT_REQUIRED` deployer, `AUTH_REQUIRED`
+billing, flaky-network runner). Fleet connectivity chips, a live task board,
+approve/deny with free-text respond, audit trail, and the devtools panel with
+the `a2a:wire` log.
+
+```bash
+npm run demo:dev   # or: cd demo && npm install && npm run dev
+```
+
 ## Docs & examples
 
 - **[docs/api.md](./docs/api.md)** — every export, with an example.

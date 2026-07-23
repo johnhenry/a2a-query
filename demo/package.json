@@ -1,0 +1,36 @@
+{
+  "name": "a2aq-demo",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Flagship demo for @johnhenry/a2aq — multi-agent task dashboard with an approval inbox, running entirely in-browser against in-process mock A2A agents.",
+  "type": "module",
+  "scripts": {
+    "parent:build": "npm --prefix .. install --no-audit --no-fund && npm --prefix .. run build",
+    "predev": "npm run parent:build",
+    "dev": "vite",
+    "prebuild": "npm run parent:build",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "pretest": "npm run parent:build",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@a2a-js/sdk": "1.0.0",
+    "@johnhenry/a2aq": "file:..",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.0",
+    "happy-dom": "^20.11.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.9"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
+  }
+}

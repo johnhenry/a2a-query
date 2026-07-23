@@ -21,3 +21,19 @@ jobs:
       - run: npm run build
       - name: Publish smoke (import the built entrypoint)
         run: node -e "import('./dist/index.js').then(m => { if (!m.A2AQuery) throw new Error('missing QueryCache export'); console.log('ok'); })"
+
+  demo-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: demo
+      # demo's pre-scripts install + build the parent lib (npm --prefix ..) first.
+      - run: npm run build
+        working-directory: demo
+      - name: Demo smoke test (happy-dom, mounts <App> and runs the approval flow)
+        run: npm test
+        working-directory: demo
