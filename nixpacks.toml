@@ -1,0 +1,14 @@
+# Deploys demo/ (the flagship dashboard demo), not the library itself.
+# providers = [] disables Vite auto-detection (would misdetect as a static
+# Caddy site instead of running the `serve` start command).
+providers = []
+
+[phases.setup]
+nixpkgsArchive = "fb7944c166a3b630f177938e478f0378e64ce108"
+nixPkgs = ["nodejs_24"]
+
+[phases.install]
+cmds = ["npm install"]
+
+[phases.build]
+cmds = ["npm run demo:build"]

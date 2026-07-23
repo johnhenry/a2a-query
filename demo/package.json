@@ -12,13 +12,15 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "pretest": "npm run parent:build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "start": "serve -s dist -l $PORT"
   },
   "dependencies": {
     "@a2a-js/sdk": "1.0.0",
     "@johnhenry/a2aq": "file:..",
     "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "react-dom": "^19.2.8",
+    "serve": "^14.2.6"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.2",
