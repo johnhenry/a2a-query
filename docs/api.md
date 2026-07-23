@@ -2,7 +2,7 @@
 
 The complete public surface of `@johnhenry/a2aq`. Conceptual background lives in
 [design.md](./design.md). Runnable demos are in [`examples/`](../examples)
-(`npm run example:01` … `example:06`).
+(`npm run example:01` … `example:07`).
 
 - [`A2AQuery`](#a2aquery)
   - [Construction](#construction)
@@ -13,8 +13,11 @@ The complete public surface of `@johnhenry/a2aq`. Conceptual background lives in
   - [`taskSnapshot()`](#tasksnapshotagent-taskid)
   - [`client()`](#clientagent)
   - [`cache`](#cache)
+  - [`status`](#status)
 - [`TaskHandle`](#taskhandle)
 - [Human-in-the-loop: `interactions` + `InputDecision`](#human-in-the-loop)
+- [Resilience: `retry` + idempotency](#resilience-retry--idempotency)
+- [Devtools: `devtools` + `A2ADevtoolsEvent`](#devtools)
 - [Keys & tags](#keys--tags)
 - [Re-exported core primitives](#re-exported-core-primitives)
 - [Testing: the in-process mock agent](#testing-the-in-process-mock-agent)
@@ -36,6 +39,9 @@ const q = new A2AQuery({
   interactions: new InteractionBroker(),  // optional HITL broker (see below)
   taskPollMs: 150,                        // poll cadence for task handles (default 150)
   cardStaleTime: 5 * 60_000,              // card cache freshness (default 5 min)
+  status: sharedStatusStore,              // optional shared StatusStore (default: fresh)
+  retry: { retries: 3 },                  // optional RetryPolicy (absent = single attempt)
+  devtools: new DevtoolsHub(),            // optional DevtoolsSink (absent = zero emission)
 });
 ```
 
@@ -137,6 +143,29 @@ q.cache.invalidateTags([agentTag("travel")]); // blunt: everything from one agen
 q.cache.clear((k) => k.agent === "travel");   // evict instead of staling
 ```
 
+### `status`
+
+Per-agent connectivity as a core `StatusStore` (versioned, subscribable —
+`idle | connecting | ready | degraded | closed`). Keyed by agent name.
+Transitions a2aq drives:
+
+- `connecting` while the SDK client + card are being created; `ready` on success.
+- `degraded` on transient send/poll/card errors (with `lastError`; under a
+  [`retry` policy](#resilience-retry--idempotency) also `attempt` and `retryAt`
+  per scheduled retry); back to `ready` on the next success (`attempt` resets).
+- `closed` when a failed connect evicts the client from the registry.
+
+```ts
+q.status.subscribe(() => {
+  const s = q.status.get("travel");
+  render(s?.state, s?.state === "degraded" ? `retry #${s.attempt}` : "");
+});
+```
+
+Inject a shared store to aggregate several clients (e.g. a2aq + mcpq peers in
+one dashboard): `new A2AQuery({ agents, status: sharedStore })` — `q.status`
+then *is* that store.
+
 ---
 
 ## TaskHandle
@@ -234,6 +263,66 @@ Broker mechanics (details in [design.md](./design.md#the-paused-state-broker)):
 
 ---
 
+## Resilience: `retry` + idempotency
+
+Pass a core `RetryPolicy` as `retry` and transient wire failures are retried
+with exponential backoff (full jitter, injectable `random` for determinism).
+**Absent, behavior is exactly as before: one attempt, first failure rejects.**
+
+```ts
+const q = new A2AQuery({
+  agents,
+  retry: { retries: 3, baseDelayMs: 200, factor: 2 }, // random: () => 0.5 for deterministic tests
+});
+```
+
+What retries, and why it is safe:
+
+- **Sends** (`sendMessage()` and paused-task resumes via `respond()`/broker
+  approvals). a2aq fixes the A2A `messageId` **before the first attempt** —
+  generating one client-side if the caller's `Message` has none — and reuses
+  the SAME id on every retry. The messageId IS the idempotency key: an agent
+  that already processed it can dedupe the duplicate delivery. This is what
+  lets a2aq pass `idempotent: true` to the core's `withRetry` (which otherwise
+  refuses to retry at all).
+- **Task polls** (`getTask`) — natural reads. A transient poll failure retries
+  per policy instead of settling the handle; `result()` rejects only on
+  exhaustion. Retries happen *inside* one poll step, so pause tracking still
+  sees each observed state once — a retried poll cannot double-prompt the broker.
+- **Card refetches** — natural reads.
+
+Each scheduled retry updates [`status`](#status): `degraded` with the attempt
+count, `retryAt`, and the error. `cancel()` is not retried.
+
+---
+
+## Devtools
+
+Pass any core `DevtoolsSink` (e.g. a `DevtoolsHub` ring buffer) as `devtools`
+and a2aq emits compact, JSON-serializable events. **No sink, zero emission.**
+
+```ts
+import { A2AQuery, DevtoolsHub, type A2ADevtoolsEvent } from "@johnhenry/a2aq";
+
+const hub = new DevtoolsHub<A2ADevtoolsEvent>();
+const q = new A2AQuery({ agents, devtools: hub });
+// later: hub.events() — the timeline; hub.subscribe()/getVersion() for panels
+```
+
+| Event | Payload | Emitted on |
+|---|---|---|
+| `a2a:send` | `{ agent, taskId?, messageId }` | send success (initial + resume) |
+| `a2a:task-status` | `{ agent, taskId, state }` | observed task state **change** (not every poll) |
+| `a2a:artifact` | `{ agent, taskId, artifactId }` | a new artifact appears on an observed task |
+| `a2a:gate` | `{ agent, taskId, kind: "input" \| "auth", outcome }` | broker gate resolution |
+| `a2a:card-refresh` | `{ agent }` | card refetched from the wire |
+| `a2a:status` | `{ agent, state }` | connectivity state change |
+
+Task states are emitted as enum names (`"TASK_STATE_WORKING"`). See
+`examples/07-devtools-and-resilience.ts` for a full printed timeline.
+
+---
+
 ## Keys & tags
 
 Structured cache keys, serialized canonically:
@@ -263,9 +352,10 @@ Every card write carries `[cardTag, agentTag]`; every task write carries
 ## Re-exported core primitives
 
 For convenience, the pieces of `@johnhenry/agent-query-core` consumers configure
-are re-exported: `InteractionBroker`, `QueryCache`, and the types `AuditEntry`,
-`BaseDecision`, `Interaction`, `PolicyVerdict`. Import them from either package —
-they are the same objects.
+are re-exported: `InteractionBroker`, `QueryCache`, `StatusStore`, `DevtoolsHub`,
+`withRetry`, and the types `AuditEntry`, `BaseDecision`, `ConnectivityState`,
+`DevtoolsSink`, `Interaction`, `PeerStatus`, `PolicyVerdict`, `RetryPolicy`.
+Import them from either package — they are the same objects.
 
 ---
 
@@ -297,6 +387,22 @@ const q = new A2AQuery({
 - `setTaskState(taskId, state)` — force a task into a state out-of-band; the
   deterministic way to drive transitions (leave / re-enter a pause) that a
   polling client observes.
+
+**`flakyFetchImpl(mock, { failFirst, methods?, error? })`** — wrap the mock's
+fetch in transient network failure: the first `failFirst` matching requests
+throw a network-ish `TypeError` *before* reaching the server, then delegate.
+Failed attempts are still recorded in `mock.callLog`, so tests can assert what
+every attempt carried (e.g. that retries reuse the identical messageId).
+`methods` restricts failures to specific wire methods (`"SendMessage"`,
+`"GetTask"`, `"CancelTask"`, `"GetAgentCard"` for card GETs).
+
+```ts
+import { MockA2AAgent, echoExecutor, flakyFetchImpl } from "@johnhenry/a2aq/testing";
+
+const mock = new MockA2AAgent(echoExecutor());
+const fetchImpl = flakyFetchImpl(mock, { failFirst: 2, methods: ["SendMessage"] });
+// inject fetchImpl into AgentConfig; pair with a retry policy to see recovery
+```
 
 **Executor helpers** — each a complete task lifecycle:
 

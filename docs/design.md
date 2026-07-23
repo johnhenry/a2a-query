@@ -123,6 +123,77 @@ equal writes emit nothing. Streaming (`sendMessageStream` / `resubscribeTask`)
 and webhook push notifications slot in *behind* the same `TaskHandle` surface —
 they change how snapshots arrive, not what consumers see. Tracked in the issues.
 
+## The resilience model
+
+Three additive layers from the core, all off by default and all truthful.
+
+### Status semantics
+
+`q.status` is a core `StatusStore` — the gRPC channel-state vocabulary
+(`idle | connecting | ready | degraded | closed`), keyed by agent name. The
+rule is honesty about what each state *means* for the client object:
+
+- **`connecting` → `ready`** brackets SDK client + card creation.
+- **`degraded`** means "the client is intact; a wire call failed transiently" —
+  send, poll, or card errors. Under a retry policy, every scheduled retry
+  merges `attempt` + `retryAt` + `lastError` (the "retrying in Ns" UI). The
+  next successful call returns the agent to `ready` (attempt resets to 0).
+- **`closed`** means "the client object is gone": a failed connect evicts the
+  memoized client from the registry, and eviction — not a transient error —
+  is what sets `closed`. A later call re-creates the client (`connecting` again).
+
+Inject one `StatusStore` into several clients (`status` config) to aggregate a
+multi-protocol dashboard; a2aq contributes its agents as peers.
+
+### Retry & idempotency: the messageId contract
+
+The core's `withRetry` refuses to retry anything not explicitly declared
+`idempotent: true` — the caller must point at the mechanism that makes a
+duplicate delivery safe. a2aq's mechanism is the protocol's own: **the A2A
+`messageId` is the idempotency key.** a2aq fixes it client-side *before the
+first attempt* (generating one when the caller's `Message` has none) and
+reuses the identical id on every retry, so an agent that already processed
+the message can dedupe the duplicate. Without that fixed id, a retried send
+would be a double-send — which is exactly why no `retry` config means strict
+single-attempt behavior.
+
+Polls and card fetches are reads — naturally idempotent. A transient poll
+failure retries *inside* one poll step (the handle settles rejected only on
+exhaustion), which composes with the pause-broker invariants for free: the
+broker sees each successfully observed state exactly once, so a retried poll
+can never double-prompt or double-resume.
+
+### Devtools event vocabulary
+
+With a `devtools` sink configured, a2aq narrates itself in compact,
+JSON-serializable events (no live objects; task states as enum names):
+
+| Event | Meaning |
+|---|---|
+| `a2a:send` | a message landed (initial send or paused-task resume) — carries the messageId |
+| `a2a:task-status` | an observed task changed state (change-detected, not per-poll) |
+| `a2a:artifact` | a new artifact appeared on an observed task |
+| `a2a:gate` | the broker resolved a pause gate (`kind` input/auth, `outcome` approve/deny) |
+| `a2a:card-refresh` | the agent card was refetched from the wire |
+| `a2a:status` | connectivity changed (mirrors the StatusStore) |
+
+The emission points are deliberately the *change* points — the same edges the
+cache's structural sharing and the broker's entry-tracking already compute —
+so a timeline reads as a causal story, not a poll log.
+
+## Family rules
+
+a2aq honors the cross-cutting contracts in the core's
+[design doc — Family rules](https://github.com/johnhenry/agent-query-core/blob/main/docs/design.md#family-rules).
+The load-bearing one is **reconcile on stream resume**: a stream is an
+optimization over periodic relisting, never a replacement — after any resume,
+do a full read and reconcile the cache. a2aq's position: it is poll-driven, so
+reconciliation is inherent — **every poll IS a full read** of the task, and the
+cache reconverges to server truth each cycle by construction. When streaming
+lands (`sendMessageStream` / `resubscribeTask`, tracked in
+[issue #1](https://github.com/johnhenry/a2a-query/issues/1)), a resubscribe
+must be followed by a `getTask` reconcile before trusting the stream again.
+
 ## Positioning: A2A vs AG-UI / A2UI
 
 Adjacent protocols answer different questions:
