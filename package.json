@@ -41,7 +41,7 @@
     "example:06": "tsx examples/06-policy-autopilot.ts"
   },
   "dependencies": {
-    "@johnhenry/agent-query-core": "0.1.0-rc.1"
+    "@johnhenry/agent-query-core": "0.1.0-rc.3"
   },
   "peerDependencies": {
     "@a2a-js/sdk": "1.0.0"
