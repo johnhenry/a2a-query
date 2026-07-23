@@ -16,8 +16,14 @@ import {
 import {
   InteractionBroker,
   QueryCache,
+  StatusStore,
+  withRetry,
   type BaseDecision,
   type CacheEntry,
+  type ConnectivityState,
+  type DevtoolsSink,
+  type PeerStatus,
+  type RetryPolicy,
 } from "@johnhenry/agent-query-core";
 
 import { agentTag, cardTag, serializeA2AKey, taskTag, type A2AKey } from "./keys.js";
@@ -27,6 +33,25 @@ export interface InputDecision extends BaseDecision {
   /** The message to resume the task with (its taskId is filled in automatically). */
   message?: Message;
 }
+
+/**
+ * Compact, serializable devtools events a2aq emits into a `DevtoolsSink`
+ * (e.g. the core's `DevtoolsHub`). Task states are emitted as their enum
+ * *names* (`"TASK_STATE_WORKING"`) so timelines read without a decoder ring.
+ */
+export type A2ADevtoolsEvent =
+  /** A message hit the wire successfully (initial send or a paused-task resume). */
+  | { type: "a2a:send"; agent: string; taskId?: string; messageId: string }
+  /** An observed task changed state (emitted on CHANGE, not on every poll). */
+  | { type: "a2a:task-status"; agent: string; taskId: string; state: string }
+  /** A new artifact appeared on an observed task. */
+  | { type: "a2a:artifact"; agent: string; taskId: string; artifactId: string }
+  /** The interaction broker resolved a paused-state gate. */
+  | { type: "a2a:gate"; agent: string; taskId: string; kind: "input" | "auth"; outcome: "approve" | "deny" }
+  /** The agent card was refetched from the wire. */
+  | { type: "a2a:card-refresh"; agent: string }
+  /** The agent's connectivity state changed (mirrors the StatusStore). */
+  | { type: "a2a:status"; agent: string; state: ConnectivityState };
 
 export interface AgentConfig {
   /** Base URL of the agent (card fetched from /.well-known/agent-card.json by default). */
@@ -45,6 +70,22 @@ export interface A2AQueryConfig {
   taskPollMs?: number;
   /** Card cache freshness (ms). Default 5 minutes. */
   cardStaleTime?: number;
+  /**
+   * Per-agent connectivity store. Default: a fresh `StatusStore`. Inject one to
+   * share a single store across several clients (multi-protocol dashboards).
+   */
+  status?: StatusStore;
+  /**
+   * Retry policy for transient failures on sends, task polls, and card fetches.
+   * Absent ⇒ single-attempt behavior (no retries), exactly as before.
+   *
+   * Sends are retried as idempotent because a2aq fixes the A2A `messageId`
+   * BEFORE the first attempt and reuses it on every retry — the messageId IS
+   * the idempotency key the receiving agent can dedupe on.
+   */
+  retry?: RetryPolicy;
+  /** Devtools sink (e.g. the core's `DevtoolsHub`). Absent ⇒ zero emission. */
+  devtools?: DevtoolsSink<A2ADevtoolsEvent>;
 }
 
 /** Paused, non-terminal states a human can resume; terminal states settle handles. */
@@ -71,9 +112,18 @@ export interface TaskHandle {
   cancel(): Promise<void>;
 }
 
+/** Client-side message id — fixed before the first attempt so retries reuse it. */
+const newMessageId = (): string => crypto.randomUUID();
+
+const asError = (err: unknown): Error => (err instanceof Error ? err : new Error(String(err)));
+
+const stateName = (state: TaskState): string => TaskState[state] ?? String(state);
+
 export class A2AQuery {
   readonly cache: QueryCache<A2AKey>;
   readonly interactions?: InteractionBroker<InputDecision>;
+  /** Per-agent connectivity (versioned, subscribable). Shared when injected via config. */
+  readonly status: StatusStore;
   private clients = new Map<string, Promise<Client>>();
   private resolvers = new Map<string, DefaultAgentCardResolver>();
   private cfg: A2AQueryConfig;
@@ -84,6 +134,7 @@ export class A2AQuery {
     this.interactions = cfg.interactions;
     this.taskPollMs = cfg.taskPollMs ?? 150;
     this.cache = new QueryCache<A2AKey>({ serializeKey: serializeA2AKey });
+    this.status = cfg.status ?? new StatusStore();
   }
 
   agents(): string[] {
@@ -105,22 +156,28 @@ export class A2AQuery {
           clientConfig: { polling: true },
         }),
       );
+      this.setStatus(agent, { state: "connecting" });
       p = factory.createFromUrl(conf.url, conf.cardPath).then((client) => {
+        this.markReady(agent);
         void this.refreshCard(agent, client);
         return client;
       });
       this.clients.set(agent, p);
       // A failed connect (bad URL, unreachable card) must not poison the map
-      // forever — drop the rejected promise so the next call can retry.
-      p.catch(() => {
-        if (this.clients.get(agent) === p) this.clients.delete(agent);
+      // forever — drop the rejected promise so the next call can retry. The
+      // evicted client is gone, not merely degraded: status goes "closed".
+      p.catch((err) => {
+        if (this.clients.get(agent) === p) {
+          this.clients.delete(agent);
+          this.setStatus(agent, { state: "closed", lastError: asError(err) });
+        }
       });
     }
     return p;
   }
 
   // ── agent cards ───────────────────────────────────────────────────────────
-  /** The agent's card, cached (cardStaleTime, default 5 min). */
+  /** The agent's card, cached (cardStaleTime, default 5 min). Wire refetches are idempotent reads — retried per `retry` when configured. */
   async card(agent: string, opts: { refresh?: boolean } = {}): Promise<AgentCard> {
     const key: A2AKey = { kind: "card", agent };
     if (!opts.refresh && !this.cache.isStale(key)) return this.cache.getSnapshot(key)!.data as AgentCard;
@@ -134,7 +191,9 @@ export class A2AQuery {
       resolver = new DefaultAgentCardResolver({ fetchImpl: conf.fetchImpl, path: conf.cardPath });
       this.resolvers.set(agent, resolver);
     }
-    const card = await resolver.resolve(conf.url, conf.cardPath);
+    const card = await this.attempt(agent, () => resolver.resolve(conf.url, conf.cardPath), true);
+    this.markReady(agent);
+    this.emit({ type: "a2a:card-refresh", agent });
     this.writeCard(agent, card);
     return card;
   }
@@ -153,15 +212,81 @@ export class A2AQuery {
     });
   }
 
+  // ── resilience plumbing ───────────────────────────────────────────────────
+  /**
+   * Run a wire call under the configured retry policy (or single-attempt when
+   * none). Threads status through: each scheduled retry marks the agent
+   * `degraded` with the attempt count and the `retryAt` stamp; a final failure
+   * leaves it `degraded` (the client object is still usable — eviction, which
+   * is terminal, sets `closed` in `client()` instead and wins over this).
+   */
+  private attempt<T>(agent: string, fn: () => Promise<T>, idempotent: boolean): Promise<T> {
+    const policy = this.cfg.retry;
+    const run = policy
+      ? withRetry(() => fn(), policy, {
+          idempotent,
+          onRetry: (err, attemptNo, delayMs) =>
+            this.setStatus(agent, {
+              state: "degraded",
+              attempt: attemptNo + 1,
+              retryAt: Date.now() + delayMs,
+              lastError: asError(err),
+            }),
+        })
+      : fn();
+    return run.catch((err) => {
+      // Connect failures evict the client and set "closed" first — keep that.
+      if (this.status.get(agent)?.state !== "closed") {
+        this.setStatus(agent, { state: "degraded", lastError: asError(err), retryAt: undefined });
+      }
+      throw err;
+    });
+  }
+
+  /** A successful wire call: back to ready (attempt auto-resets, errors cleared). */
+  private markReady(agent: string): void {
+    this.setStatus(agent, { state: "ready", lastError: undefined, retryAt: undefined });
+  }
+
+  private setStatus(agent: string, partial: Partial<PeerStatus> & { state: ConnectivityState }): void {
+    const prev = this.status.get(agent)?.state;
+    this.status.set(agent, partial);
+    if (prev !== partial.state) this.emit({ type: "a2a:status", agent, state: partial.state });
+  }
+
+  private emit(e: A2ADevtoolsEvent): void {
+    this.cfg.devtools?.emit(e);
+  }
+
   // ── messages & tasks ──────────────────────────────────────────────────────
   /**
    * Send a message. A direct Message reply is returned as-is; a Task reply is
    * cached and wrapped in a poll-driven TaskHandle whose paused states route
    * through the broker.
+   *
+   * **Idempotency contract.** If `message.messageId` is empty, a2aq generates
+   * one client-side BEFORE the first attempt; either way the SAME messageId is
+   * sent on every retry attempt (when a `retry` policy is configured). The A2A
+   * messageId IS the idempotency key: an agent that already processed the id
+   * can dedupe the duplicate delivery, which is what makes retrying a send safe.
    */
   async sendMessage(agent: string, message: Message): Promise<Message | TaskHandle> {
-    const client = await this.client(agent);
-    const result = await client.sendMessage({ tenant: "", message, configuration: undefined, metadata: undefined });
+    const outbound: Message = message.messageId ? message : { ...message, messageId: newMessageId() };
+    const result = await this.attempt(
+      agent,
+      async () => {
+        const client = await this.client(agent);
+        return client.sendMessage({ tenant: "", message: outbound, configuration: undefined, metadata: undefined });
+      },
+      true, // safe: the fixed messageId above is the dedupe key
+    );
+    this.markReady(agent);
+    this.emit({
+      type: "a2a:send",
+      agent,
+      taskId: this.isTask(result) ? result.id : outbound.taskId || undefined,
+      messageId: outbound.messageId,
+    });
     if (this.isTask(result)) {
       this.writeTask(agent, result);
       return this.makeHandle(agent, result);
@@ -171,8 +296,15 @@ export class A2AQuery {
 
   /** A handle for an existing task (e.g. resumed from a stored id). */
   async task(agent: string, taskId: string): Promise<TaskHandle> {
-    const client = await this.client(agent);
-    const task = await client.getTask({ tenant: "", id: taskId, historyLength: undefined });
+    const task = await this.attempt(
+      agent,
+      async () => {
+        const client = await this.client(agent);
+        return client.getTask({ tenant: "", id: taskId, historyLength: undefined });
+      },
+      true, // read
+    );
+    this.markReady(agent);
     this.writeTask(agent, task);
     return this.makeHandle(agent, task);
   }
@@ -207,10 +339,31 @@ export class A2AQuery {
     let lastState: TaskState | undefined;
     /** Single-flight guard: at most one broker gate() in flight per handle. */
     let brokerInflight: Promise<void> | undefined;
+    /** Devtools change-tracking: last emitted state + artifact ids already seen. */
+    let lastEmittedState: TaskState | undefined;
+    const seenArtifacts = new Set<string>();
     let resolveResult!: (t: Task) => void;
     let rejectResult!: (e: unknown) => void;
     const result = new Promise<Task>((res, rej) => ((resolveResult = res), (rejectResult = rej)));
     result.catch(() => {}); // callers may never ask for the result
+
+    /** Emit devtools events for state CHANGES and newly-arrived artifacts only. */
+    const observe = (task: Task): void => {
+      if (!this.cfg.devtools) return;
+      const state = task.status?.state;
+      if (state !== undefined && state !== lastEmittedState) {
+        lastEmittedState = state;
+        this.emit({ type: "a2a:task-status", agent, taskId: task.id, state: stateName(state) });
+      }
+      for (const artifact of task.artifacts ?? []) {
+        const id = artifact.artifactId;
+        if (id && !seenArtifacts.has(id)) {
+          seenArtifacts.add(id);
+          this.emit({ type: "a2a:artifact", agent, taskId: task.id, artifactId: id });
+        }
+      }
+    };
+    observe(seed);
 
     const settle = (task: Task): boolean => {
       if (settled) return true;
@@ -233,6 +386,10 @@ export class A2AQuery {
       return settled;
     };
 
+    /**
+     * Resume sends share the send idempotency contract: the messageId is fixed
+     * before the first attempt and reused across retries (see `sendMessage`).
+     */
     const respond = async (message: Message): Promise<void> => {
       const current = (this.cache.getSnapshot(key)?.data as Task | undefined) ?? seed;
       const currentState = current.status?.state;
@@ -241,9 +398,21 @@ export class A2AQuery {
           `task ${seed.id} is already terminal (${currentState !== undefined ? TaskState[currentState] : "settled"}); cannot respond`,
         );
       }
-      const client = await this.client(agent);
-      const followUp: Message = { ...message, taskId: seed.id };
-      const res = await client.sendMessage({ tenant: "", message: followUp, configuration: undefined, metadata: undefined });
+      const followUp: Message = {
+        ...message,
+        taskId: seed.id,
+        messageId: message.messageId || newMessageId(),
+      };
+      const res = await this.attempt(
+        agent,
+        async () => {
+          const client = await this.client(agent);
+          return client.sendMessage({ tenant: "", message: followUp, configuration: undefined, metadata: undefined });
+        },
+        true, // fixed messageId above is the dedupe key
+      );
+      this.markReady(agent);
+      this.emit({ type: "a2a:send", agent, taskId: seed.id, messageId: followUp.messageId });
       if (this.isTask(res)) this.writeTask(agent, res);
     };
 
@@ -256,9 +425,11 @@ export class A2AQuery {
       if (brokerInflight) return; // single-flight: one gate at a time per handle
       if (!this.interactions) return; // app drives respond() manually via the cache state
       const type = state === TaskState.TASK_STATE_INPUT_REQUIRED ? "input-required" : "auth-required";
+      const kind = state === TaskState.TASK_STATE_INPUT_REQUIRED ? ("input" as const) : ("auth" as const);
       brokerInflight = this.interactions
         .gate(type, agent, task)
         .then(({ decision }) => {
+          this.emit({ type: "a2a:gate", agent, taskId: task.id, kind, outcome: decision.action });
           if (decision.action === "approve" && decision.message) {
             return respond(decision.message).catch(() => {});
           }
@@ -270,9 +441,21 @@ export class A2AQuery {
         });
     };
 
+    // A transiently-failing poll is retried per the policy (idempotent read)
+    // INSTEAD of settling the handle; only exhaustion reaches the loop's catch.
+    // Retries happen inside ONE pollOnce() call, so pause tracking (maybeBroker)
+    // still sees each successfully-observed state exactly once — a retried poll
+    // cannot double-prompt the broker.
     const pollOnce = async (): Promise<Task> => {
-      const client = await this.client(agent);
-      const task = await client.getTask({ tenant: "", id: seed.id, historyLength: undefined });
+      const task = await this.attempt(
+        agent,
+        async () => {
+          const client = await this.client(agent);
+          return client.getTask({ tenant: "", id: seed.id, historyLength: undefined });
+        },
+        true, // read
+      );
+      this.markReady(agent);
       this.writeTask(agent, task);
       return task;
     };
@@ -291,6 +474,7 @@ export class A2AQuery {
             rejectResult(err);
             return;
           }
+          observe(task);
           if (settle(task)) return;
           maybeBroker(task);
           await new Promise((r) => setTimeout(r, this.taskPollMs));
@@ -331,6 +515,7 @@ export class A2AQuery {
           if (state === undefined || !TERMINAL.has(state)) throw err;
         }
         this.writeTask(agent, task);
+        observe(task);
       },
     };
   }
