@@ -654,8 +654,14 @@ export class A2AQuery {
         case "task":
           return applyTask(p.value);
         case "statusUpdate": {
+          // Fold the status over the snapshot, but reassemble artifacts from
+          // their entries (the canonical copy): a concurrent write of a
+          // server-returned task with a partial inline list (e.g. respond()'s
+          // WORKING reply) must not make a terminal fold settle without the
+          // artifacts the stream already delivered.
           const cur = currentTask();
-          return applyTask({ ...cur, status: p.value.status ?? cur.status });
+          const artifacts = this.cfg.detachArtifacts ? [] : this.artifacts(agent, seed.id);
+          return applyTask({ ...cur, status: p.value.status ?? cur.status, artifacts });
         }
         case "artifactUpdate": {
           const incoming = p.value.artifact;
