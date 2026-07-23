@@ -55,10 +55,11 @@ if (typeof handle === "object" && "result" in handle) {
 | `npm run example:05` | Multi-agent — tasks in flight on two agents, cache-snapshot dashboard |
 | `npm run example:06` | Policy autopilot — `allow` auto-clears, `deny` blocks (task stays parked) |
 | `npm run example:07` | Devtools & resilience — flaky network + retry policy, status transitions, event timeline |
+| `npm run example:08` | Streaming — SSE-driven handle, mid-stream drop → degraded → resubscribe (+ family-rule reconcile) → poll fallback |
 
-Status: **first slice** (post-1.0 A2A, `@a2a-js/sdk@1.0.0` pinned exact). Streaming
-(`sendMessageStream`/`resubscribeTask`), webhook push notifications, artifact cache
-keys, skill codegen, React hooks, and devtools are tracked in the issues. Part of the
+Status: post-1.0 A2A, `@a2a-js/sdk@1.0.0` pinned exact. Streaming
+(`sendMessageStream`/`resubscribeTask`) is in. Webhook push notifications,
+skill codegen, and React hooks are tracked in the issues. Part of the
 [agent-query family](https://github.com/johnhenry/agent-query-core): shared engine in
 `@johnhenry/agent-query-core`; siblings `@johnhenry/mcpq` (MCP) and `acpq` (ACP, planned).
 

@@ -5,7 +5,7 @@
 // TaskHandles, and an approval broker for the protocol's paused task states
 // (INPUT_REQUIRED / AUTH_REQUIRED — first-class human-in-the-loop resume points).
 
-import { TaskState, type AgentCard, type Message, type Task } from "@a2a-js/sdk";
+import { TaskState, type AgentCard, type Message, type StreamResponse, type Task } from "@a2a-js/sdk";
 import {
   Client,
   ClientFactory,
@@ -50,6 +50,12 @@ export type A2ADevtoolsEvent =
   | { type: "a2a:gate"; agent: string; taskId: string; kind: "input" | "auth"; outcome: "approve" | "deny" }
   /** The agent card was refetched from the wire. */
   | { type: "a2a:card-refresh"; agent: string }
+  /**
+   * A streaming lifecycle edge for an observed task: the initial send stream
+   * opened, a resubscribe (re)attached, the stream dropped mid-flight, or the
+   * handle gave up on streaming and fell back to polling.
+   */
+  | { type: "a2a:stream"; agent: string; taskId: string; phase: "open" | "resubscribe" | "drop" | "fallback" }
   /** The agent's connectivity state changed (mirrors the StatusStore). */
   | { type: "a2a:status"; agent: string; state: ConnectivityState };
 
@@ -86,6 +92,16 @@ export interface A2AQueryConfig {
   retry?: RetryPolicy;
   /** Devtools sink (e.g. the core's `DevtoolsHub`). Absent ⇒ zero emission. */
   devtools?: DevtoolsSink<A2ADevtoolsEvent>;
+  /**
+   * Task observation mode. `"auto"` (default): stream (`sendMessageStream` /
+   * `resubscribeTask`) when the agent card advertises `capabilities.streaming`,
+   * poll otherwise. `true`: same as `"auto"` (streaming still requires the
+   * capability — the wire method is rejected without it). `false`: always poll.
+   * Polling remains the fallback and the reconnect path either way; a dropped
+   * stream degrades the agent's status and resubscribes (governed by `retry`),
+   * falling back to the poll loop when resubscription fails.
+   */
+  streaming?: boolean | "auto";
 }
 
 /** Paused, non-terminal states a human can resume; terminal states settle handles. */
@@ -116,6 +132,8 @@ export interface TaskHandle {
 const newMessageId = (): string => crypto.randomUUID();
 
 const asError = (err: unknown): Error => (err instanceof Error ? err : new Error(String(err)));
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 const stateName = (state: TaskState): string => TaskState[state] ?? String(state);
 
@@ -272,26 +290,67 @@ export class A2AQuery {
    */
   async sendMessage(agent: string, message: Message): Promise<Message | TaskHandle> {
     const outbound: Message = message.messageId ? message : { ...message, messageId: newMessageId() };
-    const result = await this.attempt(
+    const params = { tenant: "", message: outbound, configuration: undefined, metadata: undefined };
+    // One retried closure covers BOTH modes: a failed stream open is re-attempted
+    // whole (fresh generator, same messageId — the dedupe key), exactly like a
+    // failed unary send.
+    const opened = await this.attempt(
       agent,
-      async () => {
+      async (): Promise<
+        | { kind: "unary"; result: Message | Task }
+        | { kind: "stream"; gen: AsyncGenerator<StreamResponse, void, undefined>; first: IteratorResult<StreamResponse, void> }
+      > => {
         const client = await this.client(agent);
-        return client.sendMessage({ tenant: "", message: outbound, configuration: undefined, metadata: undefined });
+        if (await this.wantsStream(client)) {
+          const gen = client.sendMessageStream(params);
+          // Pull the first event here so connect errors surface under the retry policy.
+          return { kind: "stream", gen, first: await gen.next() };
+        }
+        return { kind: "unary", result: await client.sendMessage(params) };
       },
       true, // safe: the fixed messageId above is the dedupe key
     );
     this.markReady(agent);
-    this.emit({
-      type: "a2a:send",
-      agent,
-      taskId: this.isTask(result) ? result.id : outbound.taskId || undefined,
-      messageId: outbound.messageId,
-    });
-    if (this.isTask(result)) {
-      this.writeTask(agent, result);
-      return this.makeHandle(agent, result);
+    if (opened.kind === "unary") {
+      const result = opened.result;
+      this.emit({
+        type: "a2a:send",
+        agent,
+        taskId: this.isTask(result) ? result.id : outbound.taskId || undefined,
+        messageId: outbound.messageId,
+      });
+      if (this.isTask(result)) {
+        this.writeTask(agent, result);
+        return this.makeHandle(agent, result);
+      }
+      return result;
     }
-    return result;
+    // Streaming: the first event decides the reply shape (the SDK server always
+    // leads with the task — or a direct message for message-shaped replies).
+    const payload = opened.first.done ? undefined : opened.first.value.payload;
+    if (payload?.$case === "message") {
+      await opened.gen.return?.();
+      this.emit({ type: "a2a:send", agent, taskId: outbound.taskId || undefined, messageId: outbound.messageId });
+      return payload.value;
+    }
+    if (payload?.$case !== "task") {
+      await opened.gen.return?.();
+      throw new Error(
+        `agent "${agent}" opened a stream without a leading task event (got ${payload ? payload.$case : "nothing"})`,
+      );
+    }
+    const task = payload.value;
+    this.emit({ type: "a2a:send", agent, taskId: task.id, messageId: outbound.messageId });
+    this.emit({ type: "a2a:stream", agent, taskId: task.id, phase: "open" });
+    this.writeTask(agent, task);
+    return this.makeHandle(agent, task, opened.gen);
+  }
+
+  /** Whether task observation should stream, given the config mode and the agent card. */
+  private async wantsStream(client: Client): Promise<boolean> {
+    if ((this.cfg.streaming ?? "auto") === false) return false;
+    const card = await client.getAgentCard();
+    return !!card.capabilities?.streaming;
   }
 
   /** A handle for an existing task (e.g. resumed from a stored id). */
@@ -325,7 +384,11 @@ export class A2AQuery {
     });
   }
 
-  private makeHandle(agent: string, seed: Task): TaskHandle {
+  private makeHandle(
+    agent: string,
+    seed: Task,
+    initialStream?: AsyncGenerator<StreamResponse, void, undefined>,
+  ): TaskHandle {
     const key: A2AKey = { kind: "task", agent, taskId: seed.id };
     let loop: Promise<void> | undefined;
     let settled = false;
@@ -456,8 +519,116 @@ export class A2AQuery {
         true, // read
       );
       this.markReady(agent);
-      this.writeTask(agent, task);
       return task;
+    };
+
+    /**
+     * The ONE per-observation application step, shared by the poll loop and the
+     * stream loop: cache write → devtools change detection → settle → broker
+     * gating. Returns true once the handle has settled.
+     */
+    const applyTask = (task: Task): boolean => {
+      this.writeTask(agent, task);
+      observe(task);
+      if (settle(task)) return true;
+      maybeBroker(task);
+      return false;
+    };
+
+    const currentTask = (): Task => (this.cache.getSnapshot(key)?.data as Task | undefined) ?? seed;
+
+    /** Fold one stream event into the SAME task snapshot the poll loop writes. */
+    const applyStreamEvent = (ev: StreamResponse): boolean => {
+      const p = ev.payload;
+      if (!p) return settled;
+      switch (p.$case) {
+        case "task":
+          return applyTask(p.value);
+        case "statusUpdate": {
+          const cur = currentTask();
+          return applyTask({ ...cur, status: p.value.status ?? cur.status });
+        }
+        case "artifactUpdate": {
+          const incoming = p.value.artifact;
+          if (!incoming) return settled;
+          const cur = currentTask();
+          const artifacts = [...(cur.artifacts ?? [])];
+          const at = artifacts.findIndex((a) => a.artifactId === incoming.artifactId);
+          const existing = at >= 0 ? artifacts[at] : undefined;
+          if (!existing) artifacts.push(incoming);
+          else if (p.value.append) artifacts[at] = { ...incoming, parts: [...existing.parts, ...incoming.parts] };
+          else artifacts[at] = incoming;
+          return applyTask({ ...cur, artifacts });
+        }
+        case "message":
+          return settled; // agent chatter mid-stream — not task state
+      }
+    };
+
+    /** FAMILY RULE: a full getTask read, reconverging the cache to server truth. */
+    const reconcile = async (): Promise<boolean> => applyTask(await pollOnce());
+
+    /**
+     * Stream-driven observation. Consumes the initial send stream when given,
+     * then loops resubscribe → reconcile → consume. Returns true when the
+     * handle settled on the stream path; false ⇒ the caller falls back to the
+     * poll loop (resubscription failed even under the retry policy). Reconcile
+     * failures (retry-exhausted reads) propagate and settle the handle, exactly
+     * like a failed poll.
+     */
+    const runStream = async (initial?: AsyncGenerator<StreamResponse, void, undefined>): Promise<boolean> => {
+      let gen = initial;
+      for (;;) {
+        if (!gen) {
+          // Reconcile BEFORE resubscribing: the task may have settled during the
+          // gap (servers reject resubscription to terminal tasks).
+          if (await reconcile()) return true;
+          try {
+            gen = await this.attempt(
+              agent,
+              async () => {
+                const client = await this.client(agent);
+                const g = client.resubscribeTask({ tenant: "", id: seed.id });
+                // Pull the first event (the current task) here so connect errors
+                // surface under the retry policy.
+                const first = await g.next();
+                if (!first.done) applyStreamEvent(first.value);
+                return g;
+              },
+              true, // read-shaped: attaching to an existing task
+            );
+          } catch {
+            this.emit({ type: "a2a:stream", agent, taskId: seed.id, phase: "fallback" });
+            return false; // retry policy exhausted — poll from here on
+          }
+          this.markReady(agent);
+          this.emit({ type: "a2a:stream", agent, taskId: seed.id, phase: "resubscribe" });
+          // FAMILY RULE: after any resume/resubscribe, do a full getTask
+          // reconcile — never assume the gap was empty.
+          if (await reconcile()) {
+            await gen.return?.();
+            return true;
+          }
+        }
+        try {
+          for await (const ev of gen) {
+            if (applyStreamEvent(ev)) {
+              await gen.return?.();
+              return true;
+            }
+          }
+          // Graceful end without a terminal state (e.g. the executor's turn
+          // ended on a pause): reconcile, breathe, resubscribe.
+          gen = undefined;
+          if (await reconcile()) return true;
+          await sleep(this.taskPollMs);
+        } catch (err) {
+          // Mid-stream drop: degrade honestly, then loop back into resubscribe.
+          this.emit({ type: "a2a:stream", agent, taskId: seed.id, phase: "drop" });
+          this.setStatus(agent, { state: "degraded", lastError: asError(err), retryAt: undefined });
+          gen = undefined;
+        }
+      }
     };
 
     const ensureLoop = (): void => {
@@ -465,6 +636,28 @@ export class A2AQuery {
       loop = (async () => {
         if (settle(seed)) return;
         maybeBroker(seed);
+        let stream = initialStream;
+        initialStream = undefined;
+        let streaming = stream !== undefined;
+        if (!streaming && (this.cfg.streaming ?? "auto") !== false) {
+          // Handles without a live stream (q.task(), unary sends) still stream
+          // when the card allows it — via resubscribeTask.
+          try {
+            streaming = await this.wantsStream(await this.client(agent));
+          } catch {
+            streaming = false; // client creation failures surface on the wire calls below
+          }
+        }
+        if (streaming) {
+          try {
+            if (await runStream(stream)) return;
+          } catch (err) {
+            settled = true;
+            rejectResult(err);
+            return;
+          }
+          stream = undefined; // fell back: continue into the poll loop
+        }
         for (;;) {
           let task: Task;
           try {
@@ -474,13 +667,14 @@ export class A2AQuery {
             rejectResult(err);
             return;
           }
-          observe(task);
-          if (settle(task)) return;
-          maybeBroker(task);
-          await new Promise((r) => setTimeout(r, this.taskPollMs));
+          if (applyTask(task)) return;
+          await sleep(this.taskPollMs);
         }
       })();
     };
+    // A live stream is already consuming server resources — drive it eagerly.
+    // (Poll-mode handles stay lazy: the loop starts on result()/subscribe().)
+    if (initialStream) ensureLoop();
 
     return {
       taskId: seed.id,

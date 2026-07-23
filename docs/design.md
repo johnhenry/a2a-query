@@ -59,10 +59,14 @@ Design rules, inherited from the family:
 
 ## The task-handle lifecycle
 
-A `TaskHandle` is a state machine driven by a poll loop. The loop is lazy — it
-starts on the first `result()` or `subscribe()` call — and every observed state
-is written to the cache, so `task()` snapshots and subscriptions are always
-consistent with what the loop last saw.
+A `TaskHandle` is a state machine driven by an observation loop — polling by
+default, streaming when the card advertises it (see
+[Polling and streaming](#polling-and-streaming-two-drivers-one-surface)). A
+poll-mode loop is lazy — it starts on the first `result()` or `subscribe()`
+call; a handle born with a live send stream drives it eagerly (the stream is
+already consuming server resources). Every observed state is written to the
+cache, so `task()` snapshots and subscriptions are always consistent with what
+the loop last saw.
 
 ```
                     ┌──────────────── poll ────────────────┐
@@ -114,14 +118,45 @@ The broker itself (policy → pending queue → audit) is protocol-agnostic core
 a2aq's contribution is the mapping: pause type → interaction type, agent →
 peer, `Task` → payload, decision `message` → resume.
 
-### Why polling (for now)
+### Polling and streaming: two drivers, one surface
 
-The first slice polls (`taskPollMs`, SDK `polling: true` mode) because it works
-against every A2A server with zero capability negotiation, and because the
-cache turns polling's weakness (redundant reads) into a non-event: structurally
-equal writes emit nothing. Streaming (`sendMessageStream` / `resubscribeTask`)
-and webhook push notifications slot in *behind* the same `TaskHandle` surface —
-they change how snapshots arrive, not what consumers see. Tracked in the issues.
+Polling (`taskPollMs`, SDK `polling: true` mode) is the baseline because it
+works against every A2A server with zero capability negotiation, and because
+the cache turns polling's weakness (redundant reads) into a non-event:
+structurally equal writes emit nothing.
+
+Streaming (`sendMessageStream` / `resubscribeTask`) slots in *behind* the same
+`TaskHandle` surface — it changes how snapshots arrive, not what consumers see.
+With `streaming: "auto"` (the default), a handle streams when the agent card
+advertises `capabilities.streaming` and polls otherwise; `streaming: false`
+forces polling everywhere. The design rule is **one application step**: every
+observation — a polled `getTask`, a streamed full task, a `TaskStatusUpdateEvent`
+folded into the current snapshot, a `TaskArtifactUpdateEvent` upserted into the
+artifact list (`append` respected) — funnels through the same
+write → devtools-observe → settle → broker-gate sequence. Streaming therefore
+cannot diverge from polling on any lifecycle behavior: pause gating, terminal
+settlement, artifact/devtools emission are literally the same code path.
+
+The failure ladder for a live stream:
+
+1. **Drop** (the SSE connection dies mid-task): the agent's status goes
+   `degraded` (honest: the client object is fine, the wire hurt) and a
+   `a2a:stream {phase:"drop"}` devtools event marks the timeline.
+2. **Resubscribe**: `resubscribeTask`, attempted under the configured `retry`
+   policy. Every successful (re)attach is followed by the family-rule
+   reconcile (below). A stream that ends *gracefully* without a terminal state
+   (an executor turn ending on a pause) reconciles and resubscribes on the
+   poll cadence — a parked task costs no more than polling would.
+3. **Fallback**: when resubscription fails even under the retry policy, the
+   handle emits `a2a:stream {phase:"fallback"}` and drops to the poll loop for
+   the rest of its life. Polling is the reconnect path, not an apology.
+
+The initial send stream is opened inside the same retried closure as a unary
+send — a failed open is re-attempted whole (fresh generator, same `messageId`,
+the idempotency key). Resumes (`respond()`) stay unary sends; the stream picks
+up the resulting execution.
+
+Webhook push notifications remain future work in the issues.
 
 ## The resilience model
 
@@ -187,12 +222,16 @@ a2aq honors the cross-cutting contracts in the core's
 [design doc — Family rules](https://github.com/johnhenry/agent-query-core/blob/main/docs/design.md#family-rules).
 The load-bearing one is **reconcile on stream resume**: a stream is an
 optimization over periodic relisting, never a replacement — after any resume,
-do a full read and reconcile the cache. a2aq's position: it is poll-driven, so
-reconciliation is inherent — **every poll IS a full read** of the task, and the
-cache reconverges to server truth each cycle by construction. When streaming
-lands (`sendMessageStream` / `resubscribeTask`, tracked in
-[issue #1](https://github.com/johnhenry/a2a-query/issues/1)), a resubscribe
-must be followed by a `getTask` reconcile before trusting the stream again.
+do a full read and reconcile the cache. In poll mode reconciliation is
+inherent — **every poll IS a full read** of the task, and the cache reconverges
+to server truth each cycle by construction. In stream mode a2aq implements the
+rule literally: every `resubscribeTask` is bracketed by full `getTask` reads —
+one *before* attaching (the task may have settled during the gap; servers
+reject resubscription to terminal tasks) and one *after* (never assume the gap
+was empty), and a stream that ends gracefully without a terminal state
+reconciles before resubscribing. An out-of-band transition the stream never
+delivered — a task completed while no subscriber was attached — is caught by
+reconcile, not lost.
 
 ## Positioning: A2A vs AG-UI / A2UI
 
@@ -222,3 +261,12 @@ rules, the real task store — with no sockets and no timers beyond the poll
 cadence. `callLog` proves what hit the wire; `setTaskState()` drives the state
 transitions (leave/re-enter a pause) that transition-sensitive logic must be
 tested against.
+
+Streaming requests (`Accept: text/event-stream`) get a REAL SSE response — one
+JSON-RPC envelope per `data:` event, flushed as the server's own async
+generator yields, so the SDK client's SSE parser runs for real. The generator
+is pumped eagerly and keeps draining (persisting execution events to the task
+store) after a client disconnect, because a real agent does not stop executing
+when a subscriber goes away. `droppingStreamFetchImpl` sabotages exactly that
+seam: streams that die mid-flight, resubscribes that fail at connect — the
+partial failures the drop → resubscribe → poll-fallback ladder must survive.

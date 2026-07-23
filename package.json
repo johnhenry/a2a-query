@@ -39,7 +39,8 @@
     "example:04": "tsx examples/04-manual-resume.ts",
     "example:05": "tsx examples/05-multi-agent.ts",
     "example:06": "tsx examples/06-policy-autopilot.ts",
-    "example:07": "tsx examples/07-devtools-and-resilience.ts"
+    "example:07": "tsx examples/07-devtools-and-resilience.ts",
+    "example:08": "tsx examples/08-streaming.ts"
   },
   "dependencies": {
     "@johnhenry/agent-query-core": "0.1.0-rc.3"

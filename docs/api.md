@@ -2,7 +2,7 @@
 
 The complete public surface of `@johnhenry/a2aq`. Conceptual background lives in
 [design.md](./design.md). Runnable demos are in [`examples/`](../examples)
-(`npm run example:01` … `example:07`).
+(`npm run example:01` … `example:08`).
 
 - [`A2AQuery`](#a2aquery)
   - [Construction](#construction)
@@ -15,6 +15,7 @@ The complete public surface of `@johnhenry/a2aq`. Conceptual background lives in
   - [`cache`](#cache)
   - [`status`](#status)
 - [`TaskHandle`](#taskhandle)
+- [Streaming: `streaming` config + lifecycle](#streaming)
 - [Human-in-the-loop: `interactions` + `InputDecision`](#human-in-the-loop)
 - [Resilience: `retry` + idempotency](#resilience-retry--idempotency)
 - [Devtools: `devtools` + `A2ADevtoolsEvent`](#devtools)
@@ -42,6 +43,7 @@ const q = new A2AQuery({
   status: sharedStatusStore,              // optional shared StatusStore (default: fresh)
   retry: { retries: 3 },                  // optional RetryPolicy (absent = single attempt)
   devtools: new DevtoolsHub(),            // optional DevtoolsSink (absent = zero emission)
+  streaming: "auto",                      // "auto" (default) | true | false — see Streaming
 });
 ```
 
@@ -97,8 +99,12 @@ if (typeof reply === "object" && "result" in reply) {
 }
 ```
 
-Sends run in the SDK's `polling: true` client mode: they return promptly with a
-possibly-non-terminal task, and the `TaskHandle` owns the poll loop.
+Against a non-streaming agent (or with `streaming: false`), sends run in the
+SDK's `polling: true` client mode: they return promptly with a possibly-non-
+terminal task, and the `TaskHandle` owns the poll loop. Against a streaming
+agent, the send goes out as `sendMessageStream` and the handle is driven by the
+stream instead — same return shape, same handle surface (see
+[Streaming](#streaming)).
 
 ### `task(agent, taskId)`
 
@@ -214,6 +220,46 @@ server refuses), the handle refreshes the snapshot instead of throwing.
 
 ---
 
+## Streaming
+
+`streaming` config: `"auto"` (default) streams task observation when the agent
+card advertises `capabilities.streaming` and polls otherwise; `false` forces
+polling everywhere; `true` behaves like `"auto"` (the capability is still
+required — the wire method is rejected without it).
+
+When a handle streams:
+
+- The initial send goes out as **`sendMessageStream`** (SSE); handles re-opened
+  with `q.task()` attach with **`resubscribeTask`**. `TaskStatusUpdateEvent` /
+  `TaskArtifactUpdateEvent` are folded into the SAME cache entry the poll loop
+  writes (artifact `append` chunks are concatenated), through the same
+  application step — status transitions, artifacts, broker gating and devtools
+  emission behave identically to polling.
+- A handle born with a live stream starts its loop **eagerly** (the stream is
+  already consuming server resources); poll-mode handles stay lazy.
+- **Family rule — reconcile on resume.** Every resubscribe is bracketed by full
+  `getTask` reads (before attaching: the task may have settled during the gap;
+  after attaching: never assume the gap was empty). A stream that ends
+  gracefully without a terminal state reconciles, waits `taskPollMs`, and
+  resubscribes.
+- **Drop ladder.** A mid-stream drop sets the agent's status to `degraded` and
+  emits `a2a:stream {phase:"drop"}`; resubscribe attempts run under the `retry`
+  policy; when they fail, the handle emits `{phase:"fallback"}` and finishes
+  the task on the poll loop. Polling is always the reconnect path.
+- `respond()` resumes stay unary sends (same messageId idempotency contract);
+  the stream picks up the resulting execution.
+
+```ts
+const q = new A2AQuery({ agents, streaming: "auto", retry: { retries: 3 } });
+const handle = (await q.sendMessage("streamer", message)) as TaskHandle;
+handle.subscribe((task) => render(task));   // chunks arrive as the agent emits them
+await handle.result();                      // same terminal semantics as polling
+```
+
+See `examples/08-streaming.ts` for the full drop → resubscribe → reconcile run.
+
+---
+
 ## Human-in-the-loop
 
 Pass an `InteractionBroker<InputDecision>` as `interactions` and every paused
@@ -316,6 +362,7 @@ const q = new A2AQuery({ agents, devtools: hub });
 | `a2a:artifact` | `{ agent, taskId, artifactId }` | a new artifact appears on an observed task |
 | `a2a:gate` | `{ agent, taskId, kind: "input" \| "auth", outcome }` | broker gate resolution |
 | `a2a:card-refresh` | `{ agent }` | card refetched from the wire |
+| `a2a:stream` | `{ agent, taskId, phase }` | stream lifecycle edge: `open` \| `resubscribe` \| `drop` \| `fallback` |
 | `a2a:status` | `{ agent, state }` | connectivity state change |
 
 Task states are emitted as enum names (`"TASK_STATE_WORKING"`). See
@@ -388,6 +435,27 @@ const q = new A2AQuery({
   deterministic way to drive transitions (leave / re-enter a pause) that a
   polling client observes.
 
+Streaming requests (the SDK's JSON-RPC transport sends
+`Accept: text/event-stream` for `SendStreamingMessage` / `SubscribeToTask`) are
+served as a REAL SSE response — one JSON-RPC envelope per `data:` event,
+flushed as the server's generator yields. The pump keeps draining (persisting
+execution events) after a client disconnect, like a real agent that does not
+stop executing when a subscriber goes away. Non-streaming clients keep the
+drain-to-last-envelope JSON behavior. Advertise the capability to stream:
+
+```ts
+const mock = new MockA2AAgent(pacedStreamingExecutor(), {
+  card: { capabilities: { streaming: true } } as Partial<AgentCard>,
+});
+```
+
+**`droppingStreamFetchImpl(mock, { dropAfterEvents, streams?, thenFailStreams?, error? })`** —
+wrap the mock's fetch so SSE responses DROP mid-stream: the first `streams`
+(default 1) streaming responses error after `dropAfterEvents` events (the
+server keeps executing — only the client's connection dies), and with
+`thenFailStreams` later streaming requests fail at connect time, forcing the
+poll fallback. Non-streaming traffic always passes through.
+
 **`flakyFetchImpl(mock, { failFirst, methods?, error? })`** — wrap the mock's
 fetch in transient network failure: the first `failFirst` matching requests
 throw a network-ish `TypeError` *before* reaching the server, then delegate.
@@ -413,6 +481,7 @@ const fetchImpl = flakyFetchImpl(mock, { failFirst: 2, methods: ["SendMessage"] 
 | `askAuthThenEchoExecutor()` | Pauses `AUTH_REQUIRED` first turn; completes with `authed: <resume text>` |
 | `failingExecutor(detail?)` | Fails immediately, `detail` as the status-message error detail |
 | `rejectingExecutor(detail?)` | Rejects the task outright |
+| `pacedStreamingExecutor({ chunks?, stepMs? })` | Streams WORKING → appended artifact chunks (spaced `stepMs`) → COMPLETED; keeps the execution alive for mid-stream drops/resubscribes |
 
 ```ts
 import { failingExecutor } from "@johnhenry/a2aq/testing";

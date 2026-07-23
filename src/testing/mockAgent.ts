@@ -75,9 +75,15 @@ export class MockA2AAgent {
     const body = JSON.parse(String(init.body)) as Record<string, unknown>;
     this.callLog.push({ method: String(body.method), params: body.params });
     const res = await this.handler.handle(body, new ServerCallContext());
-    // Streaming methods return an async generator of JSON-RPC responses; the
-    // first slice serves non-streaming clients, so drain to the LAST envelope.
+    // Streaming methods return an async generator of JSON-RPC envelopes. A
+    // client that asked for a stream (the SDK's JSON-RPC transport sends
+    // `Accept: text/event-stream` for SendStreamingMessage / SubscribeToTask)
+    // gets a REAL SSE response — one envelope per `data:` event, delivered as
+    // the server produces them. Anyone else keeps the pre-streaming behavior:
+    // drain to the LAST envelope and serve it as plain JSON.
     if (isAsyncGenerator(res)) {
+      const accept = new Headers(init.headers).get("accept") ?? "";
+      if (accept.includes("text/event-stream")) return sseResponse(res);
       let last: unknown;
       for await (const chunk of res) last = chunk;
       return jsonResponse(last);
@@ -121,12 +127,107 @@ export function flakyFetchImpl(mock: MockA2AAgent, opts: FlakyFetchOptions): typ
   };
 }
 
+export interface StreamDropOptions {
+  /** Error the SSE stream after forwarding this many events (a mid-stream network drop). */
+  dropAfterEvents: number;
+  /** How many streaming requests to sabotage this way. Default 1 (the first). */
+  streams?: number;
+  /**
+   * After the sabotaged streams, reject FURTHER streaming requests outright with
+   * a network error instead of serving them — forces the client's resubscribe
+   * attempts to exhaust and exercises the poll fallback. Default false.
+   */
+  thenFailStreams?: boolean;
+  /** Error used both for the mid-stream drop and rejected resubscribes. */
+  error?: () => Error;
+}
+
+/**
+ * Wrap a mock agent's fetch so streaming responses DROP mid-stream: the first
+ * `streams` SSE responses error after `dropAfterEvents` events (the server keeps
+ * executing — only the client's connection dies), and, with `thenFailStreams`,
+ * later streaming requests fail at connect time. Non-streaming traffic
+ * (SendMessage / GetTask / card fetches) always passes through — exactly the
+ * partial-failure shape a stream-drop → resubscribe/poll-fallback client must survive.
+ */
+export function droppingStreamFetchImpl(mock: MockA2AAgent, opts: StreamDropOptions): typeof fetch {
+  const sabotage = opts.streams ?? 1;
+  const makeError = opts.error ?? (() => new TypeError("stream dropped"));
+  let streamCount = 0;
+  return async (input, init) => {
+    const wantsStream =
+      init?.method?.toUpperCase() === "POST" && (new Headers(init.headers).get("accept") ?? "").includes("text/event-stream");
+    if (!wantsStream) return mock.fetchImpl(input, init);
+    streamCount++;
+    if (streamCount > sabotage) {
+      if (opts.thenFailStreams) throw makeError();
+      return mock.fetchImpl(input, init);
+    }
+    const res = await mock.fetchImpl(input, init);
+    if (!res.body) return res;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let events = 0;
+    const truncated = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (events >= opts.dropAfterEvents) {
+          await reader.cancel().catch(() => {});
+          controller.error(makeError());
+          return;
+        }
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+        events += (decoder.decode(value, { stream: true }).match(/\n\n/g) ?? []).length;
+        controller.enqueue(value);
+      },
+      cancel: () => reader.cancel().catch(() => {}),
+    });
+    return new Response(truncated, { headers: res.headers });
+  };
+}
+
 function isAsyncGenerator(v: unknown): v is AsyncGenerator<unknown> {
   return typeof (v as AsyncGenerator<unknown>)?.[Symbol.asyncIterator] === "function";
 }
 
 function jsonResponse(v: unknown): Response {
   return new Response(JSON.stringify(v), { headers: { "content-type": "application/json" } });
+}
+
+/**
+ * One JSON-RPC envelope per SSE `data:` event, flushed as the server yields.
+ * The generator is pumped EAGERLY (not per client read): the SDK server
+ * persists execution events as this generator is consumed, and a real agent
+ * does not stop executing because a subscriber disconnected — so on client
+ * cancel the pump keeps draining (persisting task state) and discards output.
+ */
+function sseResponse(gen: AsyncGenerator<unknown>): Response {
+  const encoder = new TextEncoder();
+  let discard = false;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      void (async () => {
+        try {
+          for await (const value of gen) {
+            if (discard) continue;
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(value)}\n\n`));
+          }
+          if (!discard) controller.close();
+        } catch (err) {
+          if (!discard) controller.error(err);
+        }
+      })();
+    },
+    cancel() {
+      discard = true;
+    },
+  });
+  return new Response(stream, {
+    headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+  });
 }
 
 // ── executor helpers ─────────────────────────────────────────────────────────
@@ -151,6 +252,47 @@ export function echoExecutor(): AgentExecutor {
           metadata: undefined,
         } as never),
       );
+    },
+  };
+}
+
+/**
+ * An executor that streams: WORKING, then `chunks` artifact updates (appended to
+ * one artifact) spaced `stepMs` apart, then COMPLETED. The pacing keeps the
+ * execution alive long enough for mid-stream observation (drops, resubscribes).
+ */
+export function pacedStreamingExecutor(opts: { chunks?: string[]; stepMs?: number } = {}): AgentExecutor {
+  const chunks = opts.chunks ?? ["chunk-1", "chunk-2", "chunk-3"];
+  const stepMs = opts.stepMs ?? 25;
+  const pause = () => new Promise((r) => setTimeout(r, stepMs));
+  return {
+    async execute(ctx: RequestContext, bus: ExecutionEventBus): Promise<void> {
+      publishTask(bus, ctx, TaskState.TASK_STATE_WORKING);
+      for (let i = 0; i < chunks.length; i++) {
+        await pause();
+        bus.publish(
+          AgentEvent.artifactUpdate({
+            taskId: ctx.taskId,
+            contextId: ctx.contextId,
+            artifact: {
+              artifactId: "out",
+              name: "out",
+              description: "",
+              parts: [{ content: { $case: "text", value: chunks[i] } }],
+              metadata: undefined,
+              extensions: [],
+            },
+            append: i > 0,
+            lastChunk: i === chunks.length - 1,
+            metadata: undefined,
+          } as never),
+        );
+      }
+      await pause();
+      publishStatus(bus, ctx, TaskState.TASK_STATE_COMPLETED);
+    },
+    async cancelTask(taskId: string, bus: ExecutionEventBus): Promise<void> {
+      publishCanceled(bus, taskId);
     },
   };
 }
