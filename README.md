@@ -54,6 +54,7 @@ if (typeof handle === "object" && "result" in handle) {
 | `npm run example:04` | Manual resume — no broker: observe the pause, `respond()` |
 | `npm run example:05` | Multi-agent — tasks in flight on two agents, cache-snapshot dashboard |
 | `npm run example:06` | Policy autopilot — `allow` auto-clears, `deny` blocks (task stays parked) |
+| `npm run example:07` | Devtools & resilience — flaky network + retry policy, status transitions, event timeline |
 
 Status: **first slice** (post-1.0 A2A, `@a2a-js/sdk@1.0.0` pinned exact). Streaming
 (`sendMessageStream`/`resubscribeTask`), webhook push notifications, artifact cache
