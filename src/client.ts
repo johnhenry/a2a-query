@@ -5,7 +5,7 @@
 // TaskHandles, and an approval broker for the protocol's paused task states
 // (INPUT_REQUIRED / AUTH_REQUIRED — first-class human-in-the-loop resume points).
 
-import { TaskState, type Message, type Task } from "@a2a-js/sdk";
+import { TaskState, type AgentCard, type Message, type Task } from "@a2a-js/sdk";
 import {
   Client,
   ClientFactory,
@@ -75,6 +75,7 @@ export class A2AQuery {
   readonly cache: QueryCache<A2AKey>;
   readonly interactions?: InteractionBroker<InputDecision>;
   private clients = new Map<string, Promise<Client>>();
+  private resolvers = new Map<string, DefaultAgentCardResolver>();
   private cfg: A2AQueryConfig;
   private taskPollMs: number;
 
@@ -109,26 +110,47 @@ export class A2AQuery {
         return client;
       });
       this.clients.set(agent, p);
+      // A failed connect (bad URL, unreachable card) must not poison the map
+      // forever — drop the rejected promise so the next call can retry.
+      p.catch(() => {
+        if (this.clients.get(agent) === p) this.clients.delete(agent);
+      });
     }
     return p;
   }
 
   // ── agent cards ───────────────────────────────────────────────────────────
   /** The agent's card, cached (cardStaleTime, default 5 min). */
-  async card(agent: string, opts: { refresh?: boolean } = {}) {
+  async card(agent: string, opts: { refresh?: boolean } = {}): Promise<AgentCard> {
     const key: A2AKey = { kind: "card", agent };
-    if (!opts.refresh && !this.cache.isStale(key)) return this.cache.getSnapshot(key)!.data;
-    const client = await this.client(agent);
-    return this.refreshCard(agent, client);
+    if (!opts.refresh && !this.cache.isStale(key)) return this.cache.getSnapshot(key)!.data as AgentCard;
+    // Refetch through the card resolver: the SDK Client's getAgentCard() returns
+    // its in-memory copy (except for extended cards), so a stale refresh must
+    // go back to the well-known endpoint itself.
+    const conf = this.cfg.agents[agent];
+    if (!conf) throw new Error(`Unknown agent "${agent}"`);
+    let resolver = this.resolvers.get(agent);
+    if (!resolver) {
+      resolver = new DefaultAgentCardResolver({ fetchImpl: conf.fetchImpl, path: conf.cardPath });
+      this.resolvers.set(agent, resolver);
+    }
+    const card = await resolver.resolve(conf.url, conf.cardPath);
+    this.writeCard(agent, card);
+    return card;
   }
 
+  /** Seed the card cache from the client's already-resolved card (no wire call). */
   private async refreshCard(agent: string, client: Client) {
     const card = await client.getAgentCard();
+    this.writeCard(agent, card);
+    return card;
+  }
+
+  private writeCard(agent: string, card: AgentCard): void {
     this.cache.write({ kind: "card", agent }, card, {
       tags: [cardTag(agent), agentTag(agent)],
       staleTime: this.cfg.cardStaleTime ?? 5 * 60_000,
     });
-    return card;
   }
 
   // ── messages & tasks ──────────────────────────────────────────────────────
@@ -150,7 +172,7 @@ export class A2AQuery {
   /** A handle for an existing task (e.g. resumed from a stored id). */
   async task(agent: string, taskId: string): Promise<TaskHandle> {
     const client = await this.client(agent);
-    const task = await client.getTask({ id: taskId } as never);
+    const task = await client.getTask({ tenant: "", id: taskId, historyLength: undefined });
     this.writeTask(agent, task);
     return this.makeHandle(agent, task);
   }
@@ -175,8 +197,16 @@ export class A2AQuery {
     const key: A2AKey = { kind: "task", agent, taskId: seed.id };
     let loop: Promise<void> | undefined;
     let settled = false;
-    /** Paused states already surfaced to the broker (avoid re-prompting per poll). */
-    const prompted = new Set<TaskState>();
+    /**
+     * Broker re-prompt guard. The broker is prompted only on a *transition into*
+     * a paused state: once prompted, the handle stays quiet while the task sits
+     * in that same state across polls (the agent may take several polls to
+     * process a resume), and re-arms only after observing the task leave it.
+     * A different paused state (INPUT_REQUIRED → AUTH_REQUIRED) is a new pause.
+     */
+    let lastState: TaskState | undefined;
+    /** Single-flight guard: at most one broker gate() in flight per handle. */
+    let brokerInflight: Promise<void> | undefined;
     let resolveResult!: (t: Task) => void;
     let rejectResult!: (e: unknown) => void;
     const result = new Promise<Task>((res, rej) => ((resolveResult = res), (rejectResult = rej)));
@@ -190,38 +220,59 @@ export class A2AQuery {
         resolveResult(task);
       } else if (state !== undefined && TERMINAL.has(state)) {
         settled = true;
-        rejectResult(
-          new Error(
-            `task ${task.id} ${state === TaskState.TASK_STATE_CANCELED ? "was canceled" : state === TaskState.TASK_STATE_REJECTED ? "was rejected" : "failed"}`,
-          ),
-        );
+        const verb =
+          state === TaskState.TASK_STATE_CANCELED
+            ? "was canceled"
+            : state === TaskState.TASK_STATE_REJECTED
+              ? "was rejected"
+              : "failed";
+        // Surface the server's error detail (status message text) when present.
+        const detail = statusMessageText(task);
+        rejectResult(new Error(`task ${task.id} ${verb}${detail ? `: ${detail}` : ""}`));
       }
       return settled;
     };
 
     const respond = async (message: Message): Promise<void> => {
+      const current = (this.cache.getSnapshot(key)?.data as Task | undefined) ?? seed;
+      const currentState = current.status?.state;
+      if (settled || (currentState !== undefined && TERMINAL.has(currentState))) {
+        throw new Error(
+          `task ${seed.id} is already terminal (${currentState !== undefined ? TaskState[currentState] : "settled"}); cannot respond`,
+        );
+      }
       const client = await this.client(agent);
       const followUp: Message = { ...message, taskId: seed.id };
       const res = await client.sendMessage({ tenant: "", message: followUp, configuration: undefined, metadata: undefined });
       if (this.isTask(res)) this.writeTask(agent, res);
     };
 
-    const maybeBroker = async (task: Task): Promise<void> => {
+    const maybeBroker = (task: Task): void => {
       const state = task.status?.state;
-      if (state === undefined || !PAUSED.has(state) || prompted.has(state)) return;
-      prompted.add(state);
+      const prev = lastState;
+      if (state !== undefined) lastState = state;
+      if (state === undefined || !PAUSED.has(state)) return;
+      if (state === prev) return; // still parked in the same pause — already prompted
+      if (brokerInflight) return; // single-flight: one gate at a time per handle
       if (!this.interactions) return; // app drives respond() manually via the cache state
       const type = state === TaskState.TASK_STATE_INPUT_REQUIRED ? "input-required" : "auth-required";
-      const { decision } = await this.interactions.gate(type, agent, task);
-      if (decision.action === "approve" && decision.message) {
-        await respond(decision.message).catch(() => {});
-      }
-      prompted.delete(state); // a later re-pause may legitimately re-prompt
+      brokerInflight = this.interactions
+        .gate(type, agent, task)
+        .then(({ decision }) => {
+          if (decision.action === "approve" && decision.message) {
+            return respond(decision.message).catch(() => {});
+          }
+          return undefined;
+        })
+        .catch(() => {})
+        .finally(() => {
+          brokerInflight = undefined;
+        });
     };
 
     const pollOnce = async (): Promise<Task> => {
       const client = await this.client(agent);
-      const task = await client.getTask({ id: seed.id } as never);
+      const task = await client.getTask({ tenant: "", id: seed.id, historyLength: undefined });
       this.writeTask(agent, task);
       return task;
     };
@@ -230,7 +281,7 @@ export class A2AQuery {
       if (loop || settled) return;
       loop = (async () => {
         if (settle(seed)) return;
-        void maybeBroker(seed);
+        maybeBroker(seed);
         for (;;) {
           let task: Task;
           try {
@@ -241,7 +292,7 @@ export class A2AQuery {
             return;
           }
           if (settle(task)) return;
-          void maybeBroker(task);
+          maybeBroker(task);
           await new Promise((r) => setTimeout(r, this.taskPollMs));
         }
       })();
@@ -265,9 +316,31 @@ export class A2AQuery {
       respond,
       cancel: async () => {
         const client = await this.client(agent);
-        const task = await client.cancelTask({ id: seed.id } as never);
+        let task: Task;
+        try {
+          task = await client.cancelTask({ tenant: "", id: seed.id, metadata: undefined });
+        } catch (err) {
+          // Canceling an already-terminal task is a server-side error in the SDK;
+          // refresh the snapshot instead of bubbling when the task is settled.
+          try {
+            task = await client.getTask({ tenant: "", id: seed.id, historyLength: undefined });
+          } catch {
+            throw err;
+          }
+          const state = task.status?.state;
+          if (state === undefined || !TERMINAL.has(state)) throw err;
+        }
         this.writeTask(agent, task);
       },
     };
   }
+}
+
+/** Text of the message attached to a task's status, if any (server error detail). */
+function statusMessageText(task: Task): string {
+  const parts = task.status?.message?.parts ?? [];
+  return parts
+    .map((p) => (p.content?.$case === "text" ? String(p.content.value) : ""))
+    .filter(Boolean)
+    .join(" ");
 }
