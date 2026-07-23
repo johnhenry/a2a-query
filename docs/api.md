@@ -20,6 +20,7 @@ The complete public surface of `@johnhenry/a2aq`. Conceptual background lives in
 - [Human-in-the-loop: `interactions` + `InputDecision`](#human-in-the-loop)
 - [Resilience: `retry` + idempotency](#resilience-retry--idempotency)
 - [Devtools: `devtools` + `A2ADevtoolsEvent`](#devtools)
+- [React hooks: `@johnhenry/a2aq/react`](#react-hooks-johnhenrya2aqreact)
 - [Keys & tags](#keys--tags)
 - [Re-exported core primitives](#re-exported-core-primitives)
 - [Testing: the in-process mock agent](#testing-the-in-process-mock-agent)
@@ -475,6 +476,83 @@ export function App() {
 
 See `examples/10-wire-log.ts` for a printed unified timeline (wire + task
 events over a flaky network).
+
+---
+
+## React hooks: `@johnhenry/a2aq/react`
+
+Thin hooks over the store, built on the core's `useSyncExternalStore`
+bindings (no resubscribe churn on inline keys, no re-render on
+structurally-equal rewrites, SSR-deterministic first paint). React is an
+**optional** peer dependency — only this subpath touches it; the root
+entrypoint stays framework-free.
+
+### `useAgentCard(q, agent)`
+
+The agent's card, reactively and cached: renders `undefined` until the first
+fetch lands, and refetches through `q.card()` (retry policy, `cardStaleTime`)
+whenever the observed entry is stale. Fetch failures keep the last snapshot —
+`usePeerStatus(q.status, agent)` is the error surface.
+
+```tsx
+function Header({ agent }: { agent: string }) {
+  const card = useAgentCard(q, agent);
+  return <h1>{card?.name ?? "…"}</h1>;
+}
+```
+
+### `useTask(q, ref)` / `useTaskStatus(q, ref)` / `useTaskArtifacts(q, ref)`
+
+`ref` is a `TaskRef`: either a live `TaskHandle` — mounting the hook **starts
+the handle's driver loop** (poll or stream), so the component is the observer
+and no `result()`/`subscribe()` call is needed — or a plain
+`{ agent, taskId }` pair, which observes the cache only (something else
+drives the snapshot: another handle, a webhook, another component).
+`undefined` is accepted so you can render before the first send.
+
+- `useTask` → the cached `Task` snapshot (or `undefined`).
+- `useTaskStatus` → the state's enum *name* (`"TASK_STATE_WORKING"`), the
+  same vocabulary the devtools events use.
+- `useTaskArtifacts` → the artifact entries (insertion order, works under
+  `detachArtifacts`); array identity is memoized per cache write, so it is
+  safe in dependency lists.
+
+```tsx
+function TaskView({ handle }: { handle: TaskHandle }) {
+  const status = useTaskStatus(q, handle);
+  const artifacts = useTaskArtifacts(q, handle);
+  return <div>{status} — {artifacts.length} artifacts</div>;
+}
+```
+
+### `usePendingInput(q)`
+
+The approval inbox: the broker's pending queue filtered to the A2A
+paused-state kinds (`"input-required"` / `"auth-required"` — `interaction.type`
+distinguishes them for the UI), plus typed resolvers. `approve(id, message)`
+resumes the task through the owning handle's `respond()`; `deny(id)` leaves
+it parked. With no broker configured the queue is empty and the resolvers are
+no-ops.
+
+```tsx
+function Inbox() {
+  const { pending, approve, deny } = usePendingInput(q);
+  return pending.map((p) => (
+    <div key={p.id}>
+      {p.type} from {p.peer}
+      <button onClick={() => approve(p.id, msg("here you go"))}>answer</button>
+      <button onClick={() => deny(p.id)}>not now</button>
+    </div>
+  ));
+}
+```
+
+### Re-exports
+
+The core hooks compose with a2aq directly and are re-exported for a
+one-stop import: `useCacheEntry(q.cache, key)`, `useInteractions`,
+`useAuditLog(q.interactions)`, `usePeerStatus(q.status)`, `useVersioned`,
+and the `<AgentQueryDevtools>` panel.
 
 ---
 

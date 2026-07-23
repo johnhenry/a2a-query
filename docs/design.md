@@ -254,6 +254,30 @@ reconciles before resubscribing. An out-of-band transition the stream never
 delivered — a task completed while no subscriber was attached — is caught by
 reconcile, not lost.
 
+## The React subpath
+
+`@johnhenry/a2aq/react` is deliberately thin: every hook is a *view* over
+state the store already maintains, never a second source of truth. The
+core's `useSyncExternalStore` bindings do the subscription work (version
+counters, canonical key identity), and the a2aq layer only adds the A2A
+vocabulary: `useAgentCard` reads the card entry and refetches on staleness;
+`useTask`/`useTaskStatus`/`useTaskArtifacts` read the task/artifact entries;
+`usePendingInput` filters the broker queue to the two paused-state kinds and
+types the resolver over `InputDecision`.
+
+Two deliberate choices:
+
+- **A `TaskRef` is either a handle or a name.** Handed a `TaskHandle`, the
+  hook starts the handle's driver loop on mount — the component IS the
+  observer, no `result()`/`subscribe()` call needed. Handed
+  `{ agent, taskId }`, the hook observes the cache only; this is the
+  disconnected-viewer shape (webhook-fed dashboards, secondary components)
+  where some other driver owns the wire traffic.
+- **React is an optional peer.** The root entrypoint never imports it; only
+  the `/react` subpath does. Non-React consumers keep a react-free module
+  graph, and the hooks live in the same package so they can never drift from
+  the store's semantics.
+
 ## Positioning: A2A vs AG-UI / A2UI
 
 Adjacent protocols answer different questions:
