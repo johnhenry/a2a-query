@@ -33,6 +33,11 @@ TanStack-Query ergonomics: a cache, snapshots, subscriptions, tag invalidation.
 Nothing is forked: a2aq holds real SDK `Client`s and the escape hatch
 (`q.client(agent)`) hands you one.
 
+a2aq is pinned to an exact `@a2a-js/sdk` version and leaves protocol-version
+matching to the SDK/agent entirely — see the README's
+["Supported protocol versions"](../README.md#supported-protocol-versions) for
+the canonical statement of what that means for interop.
+
 ## Keys & tags: the cache vocabulary
 
 Three kinds of entries, structured keys, canonical serialization:
@@ -165,7 +170,7 @@ send — a failed open is re-attempted whole (fresh generator, same `messageId`,
 the idempotency key). Resumes (`respond()`) stay unary sends; the stream picks
 up the resulting execution.
 
-Webhook push notifications remain future work in the issues.
+Webhook push notifications are covered separately below, in "Pushes are hints; reads are truth."
 
 ## The resilience model
 

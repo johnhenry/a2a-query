@@ -19,6 +19,21 @@ the [TanStack-Query-of-A2A](https://github.com/johnhenry/mcp-query) move:
 - **In-process mock agent** (`@johnhenry/a2aq/testing`) — the SDK's own server stack
   (`DefaultRequestHandler` + `JsonRpcTransportHandler` + `InMemoryTaskStore`) behind an
   injected `fetch`: tests exercise the real wire with no sockets.
+- **Streaming** — `sendMessageStream`/`resubscribeTask` drive the handle over SSE, with
+  drop → `degraded` → resubscribe (retried) → poll-fallback handled for you, and the
+  family-rule `getTask` reconcile after every reattach.
+- **Artifact accessors** — artifact-kind cache entries, reactive chunk reads
+  (`partText`/`artifactText`/`artifactsText`), and `detachArtifacts` for eviction control.
+- **Devtools wire tap** — `tapFetch` + `devtoolsWire` summarize every JSON-RPC exchange
+  (method, ids, sizes, status — never bodies) into the same devtools timeline as task
+  events; pairs with `AgentQueryDevtools` for a drop-in panel.
+- **React hooks** (`@johnhenry/a2aq/react`, React an optional peer) — `useAgentCard`,
+  `useTask`/`useTaskStatus`/`useTaskArtifacts`, `usePendingInput`, `useSkillTask`, plus
+  the re-exported core hooks (`useAuditLog`, `usePeerStatus`, `useCacheEntry`, …).
+- **Skill codegen** — the `a2aq-codegen` CLI (and `generateSkillModule`) turn an
+  `AgentCard`'s skills into a typed `sendX(...)` module, with `useX(...)` hooks via `--hooks`.
+- **Webhook push adapter** — `createWebhookHandler` turns an agent's push notifications
+  into the same cache folds the poll/stream drivers write, followed by a reconcile read.
 
 ```ts
 import { A2AQuery, InteractionBroker } from "@johnhenry/a2aq";
@@ -36,6 +51,16 @@ if (typeof handle === "object" && "result" in handle) {
   const task = await handle.result();
 }
 ```
+
+## Install
+
+```bash
+npm install @johnhenry/a2aq@rc
+```
+
+The npm `latest` dist-tag is currently stuck at this package's first-ever
+publish (`0.1.0-rc.1`) — well behind the current release. Install with the
+`@rc` tag to get the current version (`0.1.0-rc.4` as of this writing).
 
 ## Demo
 
@@ -71,11 +96,48 @@ npm run demo:dev   # or: cd demo && npm install && npm run dev
 | `npm run example:08` | Streaming — SSE-driven handle, mid-stream drop → degraded → resubscribe (+ family-rule reconcile) → poll fallback |
 | `npm run example:09` | Artifact store — artifact-kind cache entries, reactive chunk reads, `detachArtifacts`, eviction |
 | `npm run example:10` | Wire log — `devtoolsWire` fetch tap: unified timeline of task events + wire traffic |
+| `npm run example:11` | Skill codegen — `AgentCard` skills → typed `sendX`/`useX` module (`a2aq-codegen --hooks`) |
+| `npm run example:12` | Push webhook — `createWebhookHandler`: a receiver driven entirely by pushes, never polls or sends |
 
-Status: post-1.0 A2A, `@a2a-js/sdk@1.0.0` pinned exact. Streaming
-(`sendMessageStream`/`resubscribeTask`) is in. Webhook push notifications,
-skill codegen, and React hooks are tracked in the issues. Part of the
-[agent-query family](https://github.com/johnhenry/agent-query-core): shared engine in
-`@johnhenry/agent-query-core`; siblings `@johnhenry/mcpq` (MCP) and `acpq` (ACP, planned).
+## Supported protocol versions
+
+`a2aq` is built on the official [`@a2a-js/sdk`](https://github.com/a2aproject/a2a-js),
+pinned as an **exact** peer dependency — `"@a2a-js/sdk": "1.0.0"` in
+[`package.json`](./package.json), not a caret or range. That's the source of
+truth for what this package supports; treat any other version claim as
+secondary to it. The pin is exact (rather than `^1.0.0`) because the SDK only
+just reached its 1.0 general-availability release and its surface may still
+shift before it settles — a caret range could silently pull in a breaking
+minor before a2aq has verified against it.
+
+An A2A `AgentCard`'s `supportedInterfaces` array declares, per interface, the
+protocol version that interface speaks (`AgentInterface.protocolVersion`,
+e.g. `"1.0"` or, for peers still on the older wire format, `"0.3"`). `a2aq`
+talks to any agent whose advertised interfaces include a version the
+underlying `@a2a-js/sdk` build can speak — but **a2aq itself does not
+negotiate or select protocol versions**. That matching/negotiation is the
+SDK's (and the agent's) responsibility, not a2aq's; a2aq simply hands the SDK
+client the interface URL and lets it drive the wire.
+
+Concretely, this means:
+
+- **No pre-1.0 / legacy A2A dialects.** The underlying SDK build a2aq is
+  pinned to is 1.0-only from a2aq's side; interoperating with a `"0.3"`-only
+  peer requires the SDK's own opt-in v0.3 compatibility layer, which a2aq
+  does not configure or expose.
+- **Version compatibility is the SDK's job.** If an agent's card advertises
+  only protocol versions the pinned SDK build can't speak, that's a
+  client/agent mismatch a2aq surfaces (as a connection/transport failure),
+  not one it resolves.
+- This section is intentionally scoped to what the SDK pin and its shipped
+  types confirm (see [`node_modules/@a2a-js/sdk`](https://github.com/a2aproject/a2a-js)
+  for the authoritative `AgentCard`/`AgentInterface` shapes) rather than
+  asserting spec release dates that couldn't be independently verified from
+  this environment.
+
+Part of the [agent-query family](https://github.com/johnhenry/agent-query-core):
+shared engine in `@johnhenry/agent-query-core`; siblings
+[`@johnhenry/mcpq`](https://github.com/johnhenry/mcp-query) (MCP) and
+`@johnhenry/acpq` (ACP).
 
 MIT

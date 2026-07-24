@@ -2,7 +2,9 @@
 
 The complete public surface of `@johnhenry/a2aq`. Conceptual background lives in
 [design.md](./design.md). Runnable demos are in [`examples/`](../examples)
-(`npm run example:01` … `example:08`).
+(`npm run example:01` … `example:12`). For the SDK version this package is pinned
+to and what that means for interop, see the README's
+["Supported protocol versions"](../README.md#supported-protocol-versions).
 
 - [`A2AQuery`](#a2aquery)
   - [Construction](#construction)
