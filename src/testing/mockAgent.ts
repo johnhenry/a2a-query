@@ -86,11 +86,12 @@ export class MockA2AAgent {
   constructor(executor: AgentExecutor, opts: MockA2AAgentOptions = {}) {
     this.url = opts.url ?? "http://mock-agent.local/a2a";
     this.card = {
-      protocolVersions: ["1.0"],
       name: opts.name ?? "mock-agent",
       description: "in-process mock A2A agent",
       version: "1.0.0",
-      supportedInterfaces: [{ url: this.url, protocolBinding: "JSONRPC" }],
+      supportedInterfaces: [
+        { url: this.url, protocolBinding: "JSONRPC", protocolVersion: "1.0" },
+      ],
       capabilities: {},
       defaultInputModes: ["text/plain"],
       defaultOutputModes: ["text/plain"],
