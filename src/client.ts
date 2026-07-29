@@ -25,18 +25,24 @@ import {
   InteractionBroker,
   QueryCache,
   StatusStore,
+  runInterceptors,
   withRetry,
   type BaseDecision,
   type CacheEntry,
   type ConnectivityState,
   type DevtoolsSink,
+  type Next,
+  type Operation,
   type PeerStatus,
+  type RequestInterceptor,
   type RetryPolicy,
 } from "@johnhenry/agent-query-core";
 
 import { artifactText as artifactTextOf, artifactsText } from "./artifacts.js";
 import { agentTag, artifactTag, cardTag, serializeA2AKey, taskTag, type A2AKey } from "./keys.js";
 import { tapFetch, type A2AWireSummary } from "./wire.js";
+import { x402Fetch, type X402Challenge } from "./x402.js";
+import { x402Interceptor, type X402Decision } from "./x402Interceptor.js";
 
 /** The broker decision shape for paused tasks: approve with the follow-up message. */
 export interface InputDecision extends BaseDecision {
@@ -89,6 +95,34 @@ export interface A2AQueryConfig {
   agents: Record<string, AgentConfig>;
   /** Human-in-the-loop broker gating INPUT_REQUIRED / AUTH_REQUIRED resumes. */
   interactions?: InteractionBroker<InputDecision>;
+  /**
+   * Request interceptors (policy, tracing, x402 payment-gating, …) wrapping
+   * the real wire operations: send, resume, poll, cancel, stream reattach.
+   * Wraps OUTSIDE `attempt()`'s retry — a generic backoff retry must not
+   * redundantly re-run policy/gate checks, and e.g. a 402 challenge must not
+   * silently burn the retry budget. Absent/empty ⇒ zero behavior change
+   * (calls go straight through, exactly as before this option existed).
+   *
+   * `op.args` is NOT threaded back into the call — the wire request is
+   * already closed over its own params by the time an interceptor runs, so
+   * this seam supports short-circuit / observe / deny / retry-gate (e.g.
+   * x402's pay-and-retry), not argument mutation.
+   */
+  interceptors?: RequestInterceptor[];
+  /**
+   * x402 (HTTP 402 machine-native payments) pay-and-retry, verification/
+   * simulation only — never signs or moves money, no key custody. Explicit
+   * opt-in; when set, an `x402Interceptor` is appended to `interceptors`
+   * automatically and wired to a 402-capturing fetch tap. `broker` is
+   * typically the SAME `InteractionBroker` passed to `interactions` — one
+   * consistent audit trail for both human-in-the-loop flows.
+   */
+  x402?: {
+    enabled: boolean;
+    broker: InteractionBroker<X402Decision>;
+    /** Bounds the human "ask" wait on a queued challenge. Absent ⇒ wait forever. */
+    timeoutMs?: number;
+  };
   /** Poll cadence (ms) for task handles. Default 150. */
   taskPollMs?: number;
   /** Card cache freshness (ms). Default 5 minutes. */
@@ -218,13 +252,32 @@ export class A2AQuery {
   private artifactIds = new Map<string, Set<string>>();
   /** Memoized wire-tapped fetches (one wrapper per agent when devtoolsWire is on). */
   private wireFetches = new Map<string, typeof fetch>();
+  /** Most recently captured 402 challenge per agent — popped-on-read so it never
+   *  leaks into an unrelated later failure on the same peer. */
+  private lastX402Challenge = new Map<string, X402Challenge>();
   private cfg: A2AQueryConfig;
   private taskPollMs: number;
+  private interceptors: RequestInterceptor[];
 
   constructor(cfg: A2AQueryConfig) {
     this.cfg = cfg;
     this.interactions = cfg.interactions;
     this.taskPollMs = cfg.taskPollMs ?? 150;
+    this.interceptors = [...(cfg.interceptors ?? [])];
+    if (cfg.x402?.enabled) {
+      this.interceptors.push(
+        x402Interceptor({
+          enabled: true,
+          broker: cfg.x402.broker,
+          timeoutMs: cfg.x402.timeoutMs,
+          popChallenge: (peer) => {
+            const c = this.lastX402Challenge.get(peer);
+            this.lastX402Challenge.delete(peer);
+            return c;
+          },
+        }),
+      );
+    }
     this.cache = new QueryCache<A2AKey>({ serializeKey: serializeA2AKey });
     this.status = cfg.status ?? new StatusStore();
   }
@@ -336,6 +389,21 @@ export class A2AQuery {
     });
   }
 
+  /**
+   * Run a real wire operation (send/resume/poll/cancel/stream-reattach) through
+   * the interceptor onion, with `fn` as the innermost call — `fn` already
+   * includes (or omits) `attempt()`'s retry wrapping exactly as the call site
+   * did before this option existed, so adding interceptors never changes a
+   * site's own retry behavior. `idempotent` is recorded on `op.state` for
+   * interceptors that need to gate a retry-unsafe operation (e.g. x402) —
+   * the same idempotency contract `attempt()` itself already enforces.
+   */
+  private runOp<T>(op: Operation, fn: () => Promise<T>, idempotent: boolean): Promise<T> {
+    op.state.idempotent = idempotent;
+    const exec: Next = () => fn() as Promise<unknown>;
+    return (this.interceptors.length ? runInterceptors(this.interceptors, op, exec) : exec(op)) as Promise<T>;
+  }
+
   /** A successful wire call: back to ready (attempt auto-resets, errors cleared). */
   private markReady(agent: string): void {
     this.setStatus(agent, { state: "ready", lastError: undefined, retryAt: undefined });
@@ -356,14 +424,20 @@ export class A2AQuery {
    * fetch), wire-tapped into `a2a:wire` events when `devtoolsWire` is on.
    */
   private agentFetch(agent: string, conf: AgentConfig): typeof fetch | undefined {
-    if (!this.cfg.devtoolsWire || !this.cfg.devtools) return conf.fetchImpl;
-    let tapped = this.wireFetches.get(agent);
-    if (!tapped) {
-      const inner = conf.fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
-      tapped = tapFetch(inner, (e) => this.emit({ type: "a2a:wire", agent, ...e }));
-      this.wireFetches.set(agent, tapped);
+    const needsX402 = this.cfg.x402?.enabled === true;
+    const needsWireTap = !!this.cfg.devtoolsWire && !!this.cfg.devtools;
+    if (!needsX402 && !needsWireTap) return conf.fetchImpl;
+    let composed = this.wireFetches.get(agent);
+    if (!composed) {
+      let fetchImpl = conf.fetchImpl ?? ((...args: Parameters<typeof fetch>) => fetch(...args));
+      // x402 capture sits CLOSEST to the raw fetch — it must see the real 402
+      // response before anything else (the wire tap included) touches it.
+      if (needsX402) fetchImpl = x402Fetch(fetchImpl, (challenge) => this.lastX402Challenge.set(agent, challenge));
+      if (needsWireTap) fetchImpl = tapFetch(fetchImpl, (e) => this.emit({ type: "a2a:wire", agent, ...e }));
+      composed = fetchImpl;
+      this.wireFetches.set(agent, composed);
     }
-    return tapped;
+    return composed;
   }
 
   // ── messages & tasks ──────────────────────────────────────────────────────
@@ -384,20 +458,25 @@ export class A2AQuery {
     // One retried closure covers BOTH modes: a failed stream open is re-attempted
     // whole (fresh generator, same messageId — the dedupe key), exactly like a
     // failed unary send.
-    const opened = await this.attempt(
-      agent,
-      async (): Promise<
-        | { kind: "unary"; result: Message | Task }
-        | { kind: "stream"; gen: AsyncGenerator<StreamResponse, void, undefined>; first: IteratorResult<StreamResponse, void> }
-      > => {
-        const client = await this.client(agent);
-        if (await this.wantsStream(client)) {
-          const gen = client.sendMessageStream(params);
-          // Pull the first event here so connect errors surface under the retry policy.
-          return { kind: "stream", gen, first: await gen.next() };
-        }
-        return { kind: "unary", result: await client.sendMessage(params) };
-      },
+    const opened = await this.runOp(
+      { kind: "send", peer: agent, target: outbound.messageId, args: {}, state: {} },
+      () =>
+        this.attempt(
+          agent,
+          async (): Promise<
+            | { kind: "unary"; result: Message | Task }
+            | { kind: "stream"; gen: AsyncGenerator<StreamResponse, void, undefined>; first: IteratorResult<StreamResponse, void> }
+          > => {
+            const client = await this.client(agent);
+            if (await this.wantsStream(client)) {
+              const gen = client.sendMessageStream(params);
+              // Pull the first event here so connect errors surface under the retry policy.
+              return { kind: "stream", gen, first: await gen.next() };
+            }
+            return { kind: "unary", result: await client.sendMessage(params) };
+          },
+          true, // safe: the fixed messageId above is the dedupe key
+        ),
       true, // safe: the fixed messageId above is the dedupe key
     );
     this.markReady(agent);
@@ -699,12 +778,17 @@ export class A2AQuery {
         taskId: seed.id,
         messageId: message.messageId || newMessageId(),
       };
-      const res = await this.attempt(
-        agent,
-        async () => {
-          const client = await this.client(agent);
-          return client.sendMessage({ tenant: "", message: followUp, configuration: undefined, metadata: undefined });
-        },
+      const res = await this.runOp(
+        { kind: "resume", peer: agent, target: seed.id, args: {}, state: {} },
+        () =>
+          this.attempt(
+            agent,
+            async () => {
+              const client = await this.client(agent);
+              return client.sendMessage({ tenant: "", message: followUp, configuration: undefined, metadata: undefined });
+            },
+            true, // fixed messageId above is the dedupe key
+          ),
         true, // fixed messageId above is the dedupe key
       );
       this.markReady(agent);
@@ -743,12 +827,17 @@ export class A2AQuery {
     // still sees each successfully-observed state exactly once — a retried poll
     // cannot double-prompt the broker.
     const pollOnce = async (): Promise<Task> => {
-      const task = await this.attempt(
-        agent,
-        async () => {
-          const client = await this.client(agent);
-          return client.getTask({ tenant: "", id: seed.id, historyLength: undefined });
-        },
+      const task = await this.runOp(
+        { kind: "poll", peer: agent, target: seed.id, args: {}, state: {} },
+        () =>
+          this.attempt(
+            agent,
+            async () => {
+              const client = await this.client(agent);
+              return client.getTask({ tenant: "", id: seed.id, historyLength: undefined });
+            },
+            true, // read
+          ),
         true, // read
       );
       this.markReady(agent);
@@ -824,17 +913,22 @@ export class A2AQuery {
           // gap (servers reject resubscription to terminal tasks).
           if (await reconcile()) return true;
           try {
-            gen = await this.attempt(
-              agent,
-              async () => {
-                const client = await this.client(agent);
-                const g = client.resubscribeTask({ tenant: "", id: seed.id });
-                // Pull the first event (the current task) here so connect errors
-                // surface under the retry policy.
-                const first = await g.next();
-                if (!first.done) applyStreamEvent(first.value);
-                return g;
-              },
+            gen = await this.runOp(
+              { kind: "stream", peer: agent, target: seed.id, args: {}, state: {} },
+              () =>
+                this.attempt(
+                  agent,
+                  async () => {
+                    const client = await this.client(agent);
+                    const g = client.resubscribeTask({ tenant: "", id: seed.id });
+                    // Pull the first event (the current task) here so connect errors
+                    // surface under the retry policy.
+                    const first = await g.next();
+                    if (!first.done) applyStreamEvent(first.value);
+                    return g;
+                  },
+                  true, // read-shaped: attaching to an existing task
+                ),
               true, // read-shaped: attaching to an existing task
             );
           } catch {
@@ -942,21 +1036,28 @@ export class A2AQuery {
       },
       respond,
       cancel: async () => {
-        const client = await this.client(agent);
-        let task: Task;
-        try {
-          task = await client.cancelTask({ tenant: "", id: seed.id, metadata: undefined });
-        } catch (err) {
-          // Canceling an already-terminal task is a server-side error in the SDK;
-          // refresh the snapshot instead of bubbling when the task is settled.
-          try {
-            task = await client.getTask({ tenant: "", id: seed.id, historyLength: undefined });
-          } catch {
-            throw err;
-          }
-          const state = task.status?.state;
-          if (state === undefined || !TERMINAL.has(state)) throw err;
-        }
+        const task = await this.runOp(
+          { kind: "cancel", peer: agent, target: seed.id, args: {}, state: {} },
+          async () => {
+            const client = await this.client(agent);
+            try {
+              return await client.cancelTask({ tenant: "", id: seed.id, metadata: undefined });
+            } catch (err) {
+              // Canceling an already-terminal task is a server-side error in the
+              // SDK; refresh the snapshot instead of bubbling when settled.
+              let refreshed: Task;
+              try {
+                refreshed = await client.getTask({ tenant: "", id: seed.id, historyLength: undefined });
+              } catch {
+                throw err;
+              }
+              const state = refreshed.status?.state;
+              if (state === undefined || !TERMINAL.has(state)) throw err;
+              return refreshed;
+            }
+          },
+          true, // canceling (or re-checking) an already-terminal task is a safe no-op
+        );
         this.writeTask(agent, task);
         observe(task);
       },

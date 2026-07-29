@@ -21,15 +21,21 @@ export { SKILL_METADATA_KEY, sendSkill, skillMessage, textPart } from "./skills.
 export type { SkillInput, SkillSendOptions } from "./skills.js";
 export { generateSkillModule } from "./codegen/generate.js";
 export type { GenerateSkillModuleOptions } from "./codegen/generate.js";
+export { x402Fetch, parseX402Challenge } from "./x402.js";
+export type { X402Challenge, X402PaymentRequirement } from "./x402.js";
+export { x402Interceptor, X402ChallengeError } from "./x402Interceptor.js";
+export type { X402Decision, X402InterceptorOptions } from "./x402Interceptor.js";
 // Re-export the core primitives consumers configure.
-export { DevtoolsHub, InteractionBroker, QueryCache, StatusStore, withRetry } from "@johnhenry/agent-query-core";
+export { DevtoolsHub, InteractionBroker, QueryCache, StatusStore, runInterceptors, withRetry } from "@johnhenry/agent-query-core";
 export type {
   AuditEntry,
   BaseDecision,
   ConnectivityState,
   DevtoolsSink,
   Interaction,
+  Operation,
   PeerStatus,
   PolicyVerdict,
+  RequestInterceptor,
   RetryPolicy,
 } from "@johnhenry/agent-query-core";
