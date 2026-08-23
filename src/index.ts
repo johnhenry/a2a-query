@@ -1,4 +1,4 @@
-// @johnhenry/a2aq — reactive, cached, embeddable A2A client for non-agentic apps.
+// @johnhenry/a2a-query — reactive, cached, embeddable A2A client for non-agentic apps.
 
 export { A2AQuery } from "./client.js";
 export type {

@@ -1,5 +1,5 @@
 // x402 wire format — the HTTP 402 machine-native payments challenge body. Same
-// shape as mcpq's own src/server/x402.ts (the two repos share the parsing
+// shape as mcp-query's own src/server/x402.ts (the two repos share the parsing
 // logic conceptually, not as a shared package — see the design notes on
 // agent-query-core#3 for why a 3rd package isn't warranted yet).
 
@@ -48,7 +48,7 @@ export function parseX402Challenge(body?: string): X402Challenge | undefined {
  * consuming or altering the response — a2a-js/sdk's transport throws only a
  * plain `Error` with status/body baked into a message string (no structured
  * `.status`), so detection can't happen at the interceptor's catch the way
- * mcpq's SdkHttpError-based one does; this fetch-layer tap is the reliable seam.
+ * mcp-query's SdkHttpError-based one does; this fetch-layer tap is the reliable seam.
  * Same transparent pass-through contract as `tapFetch`: same args, same
  * Response object, same rejection.
  */

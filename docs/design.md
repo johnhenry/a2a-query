@@ -1,8 +1,8 @@
-# Why a2aq looks the way it does
+# Why a2a-query looks the way it does
 
-How `@johnhenry/a2aq` maps A2A onto `@johnhenry/agent-query-core` — the shared
+How `@johnhenry/a2a-query` maps A2A onto `@johnhenry/agent-query-core` — the shared
 engine behind the [agent-query family](https://github.com/johnhenry/agent-query-core)
-(sibling: [`@johnhenry/mcpq`](https://github.com/johnhenry/mcp-query) for MCP).
+(sibling: [`@johnhenry/mcp-query`](https://github.com/johnhenry/mcp-query) for MCP).
 
 ## The reframe
 
@@ -12,13 +12,13 @@ scope for a protocol SDK — and exactly the wrong stopping point for an
 application. An app that talks to agents needs the same things a GraphQL app
 needed beyond a raw HTTP client: a **declarative, cached, reactive data layer**.
 
-a2aq is that layer for A2A. It treats remote agents as a capability surface a
+a2a-query is that layer for A2A. It treats remote agents as a capability surface a
 *non-agentic* app consumes — a dashboard, an approval inbox, a form — with
 TanStack-Query ergonomics: a cache, snapshots, subscriptions, tag invalidation.
 
-## What the SDK provides vs what a2aq adds
+## What the SDK provides vs what a2a-query adds
 
-| Concern | `@a2a-js/sdk` | `@johnhenry/a2aq` |
+| Concern | `@a2a-js/sdk` | `@johnhenry/a2a-query` |
 |---|---|---|
 | Wire codec, transports (JSON-RPC/…) | ✅ | uses as-is |
 | Agent card resolution | ✅ (`DefaultAgentCardResolver`) | cached with `cardStaleTime`, tag-invalidatable |
@@ -30,10 +30,10 @@ TanStack-Query ergonomics: a cache, snapshots, subscriptions, tag invalidation.
 | Multi-agent | — (one endpoint per `Client`) | registry/router, per-agent cache isolation |
 | Testing | server stack | in-process mock agent behind injected `fetch` |
 
-Nothing is forked: a2aq holds real SDK `Client`s and the escape hatch
+Nothing is forked: a2a-query holds real SDK `Client`s and the escape hatch
 (`q.client(agent)`) hands you one.
 
-a2aq is pinned to an exact `@a2a-js/sdk` version and leaves protocol-version
+a2a-query is pinned to an exact `@a2a-js/sdk` version and leaves protocol-version
 matching to the SDK/agent entirely — see the README's
 ["Supported protocol versions"](../README.md#supported-protocol-versions) for
 the canonical statement of what that means for interop.
@@ -65,7 +65,7 @@ Design rules, inherited from the family:
   surgical staleness; the coarse `agent:` tag for blunt "this agent
   reconnected / was removed" invalidation. Every write carries both.
 - **Never mutate a cached object.** The cache uses structural sharing to
-  suppress no-op emits; mutating in place would make a change invisible. a2aq
+  suppress no-op emits; mutating in place would make a change invisible. a2a-query
   only ever writes fresh objects from the wire.
 - `partition` is reserved for multi-tenant isolation (same task id, different
   authorization context) — present in the key shape now so it is not a
@@ -109,7 +109,7 @@ the loop last saw.
 ### The paused-state broker
 
 A2A's `INPUT_REQUIRED` and `AUTH_REQUIRED` are the protocol's human-in-the-loop
-seams: the agent is parked until someone sends a follow-up message. a2aq routes
+seams: the agent is parked until someone sends a follow-up message. a2a-query routes
 them through the shared `InteractionBroker` with three invariants:
 
 1. **Prompt on entry, not on presence.** Polling shows the *same* paused state
@@ -129,7 +129,7 @@ them through the shared `InteractionBroker` with three invariants:
    the app.
 
 The broker itself (policy → pending queue → audit) is protocol-agnostic core;
-a2aq's contribution is the mapping: pause type → interaction type, agent →
+a2a-query's contribution is the mapping: pause type → interaction type, agent →
 peer, `Task` → payload, decision `message` → resume.
 
 ### Polling and streaming: two drivers, one surface
@@ -192,14 +192,14 @@ rule is honesty about what each state *means* for the client object:
   is what sets `closed`. A later call re-creates the client (`connecting` again).
 
 Inject one `StatusStore` into several clients (`status` config) to aggregate a
-multi-protocol dashboard; a2aq contributes its agents as peers.
+multi-protocol dashboard; a2a-query contributes its agents as peers.
 
 ### Retry & idempotency: the messageId contract
 
 The core's `withRetry` refuses to retry anything not explicitly declared
 `idempotent: true` — the caller must point at the mechanism that makes a
-duplicate delivery safe. a2aq's mechanism is the protocol's own: **the A2A
-`messageId` is the idempotency key.** a2aq fixes it client-side *before the
+duplicate delivery safe. a2a-query's mechanism is the protocol's own: **the A2A
+`messageId` is the idempotency key.** a2a-query fixes it client-side *before the
 first attempt* (generating one when the caller's `Message` has none) and
 reuses the identical id on every retry, so an agent that already processed
 the message can dedupe the duplicate. Without that fixed id, a retried send
@@ -214,7 +214,7 @@ can never double-prompt or double-resume.
 
 ### Devtools event vocabulary
 
-With a `devtools` sink configured, a2aq narrates itself in compact,
+With a `devtools` sink configured, a2a-query narrates itself in compact,
 JSON-serializable events (no live objects; task states as enum names):
 
 | Event | Meaning |
@@ -234,7 +234,7 @@ cache's structural sharing and the broker's entry-tracking already compute —
 so a timeline reads as a causal story, not a poll log.
 
 The wire log is the exception, and that is why it is opt-in: it narrates
-*traffic*, not change (a poll log is exactly what it is). a2aq's wire surface
+*traffic*, not change (a poll log is exactly what it is). a2a-query's wire surface
 is an injected `fetch`, not a `send`/`onmessage` transport, so the core's
 `instrumentTransport` does not apply — `tapFetch` is the fetch-shaped analog,
 emitting per-direction summaries (method, taskId, sizes, status, SSE flag,
@@ -245,13 +245,13 @@ core's `<AgentQueryDevtools>` panel shows intent (task events) and traffic
 
 ## Family rules
 
-a2aq honors the cross-cutting contracts in the core's
+a2a-query honors the cross-cutting contracts in the core's
 [design doc — Family rules](https://github.com/johnhenry/agent-query-core/blob/main/docs/design.md#family-rules).
 The load-bearing one is **reconcile on stream resume**: a stream is an
 optimization over periodic relisting, never a replacement — after any resume,
 do a full read and reconcile the cache. In poll mode reconciliation is
 inherent — **every poll IS a full read** of the task, and the cache reconverges
-to server truth each cycle by construction. In stream mode a2aq implements the
+to server truth each cycle by construction. In stream mode a2a-query implements the
 rule literally: every `resubscribeTask` is bracketed by full `getTask` reads —
 one *before* attaching (the task may have settled during the gap; servers
 reject resubscription to terminal tasks) and one *after* (never assume the gap
@@ -262,10 +262,10 @@ reconcile, not lost.
 
 ## The React subpath
 
-`@johnhenry/a2aq/react` is deliberately thin: every hook is a *view* over
+`@johnhenry/a2a-query/react` is deliberately thin: every hook is a *view* over
 state the store already maintains, never a second source of truth. The
 core's `useSyncExternalStore` bindings do the subscription work (version
-counters, canonical key identity), and the a2aq layer only adds the A2A
+counters, canonical key identity), and the a2a-query layer only adds the A2A
 vocabulary: `useAgentCard` reads the card entry and refetches on staleness;
 `useTask`/`useTaskStatus`/`useTaskArtifacts` read the task/artifact entries;
 `usePendingInput` filters the broker queue to the two paused-state kinds and
@@ -291,7 +291,7 @@ stream, push — three transports, ONE application step: everything funnels
 into the same task snapshot + artifact mirror writes (`ingestPush` mirrors
 the stream driver's fold exactly: status over the snapshot with artifacts
 reassembled from their entries; artifact chunks merged against the mirror
-entry). What pushes add is a delivery channel a2aq doesn't control: HTTP
+entry). What pushes add is a delivery channel a2a-query doesn't control: HTTP
 POSTs with no ordering guarantee, retried by senders, dropped by networks.
 So the handler treats every push as a *hint* — fold it for latency, then do
 a full `getTask` and let server truth win. The out-of-order case (a stale
@@ -301,7 +301,7 @@ see truth.
 
 Two boundary decisions worth noting. The handler is `(Request) => Response`
 over web standards rather than an Express/Hono/Node binding — the narrowest
-interface every runtime already speaks, so a2aq takes no server-framework
+interface every runtime already speaks, so a2a-query takes no server-framework
 dependency for one endpoint. And in-process testing swaps the SDK sender's
 *transport*, not its *payloads*: the mock's push path reuses the SDK's own
 `V1PushNotificationSerializer`, so what the tests parse is byte-for-byte
@@ -310,7 +310,7 @@ unmockable choice is dispatching via global fetch).
 
 ## Skill codegen: honest about what the card declares
 
-The mcpq codegen pattern — machine-readable capability descriptions become
+The mcp-query codegen pattern — machine-readable capability descriptions become
 typed client code — meets a protocol reality in A2A: `AgentSkill` is
 *discovery* data (id, name, description, tags, examples, media modes), not a
 parameter schema. There is nothing to derive typed params from, and Messages
@@ -322,7 +322,7 @@ So the generated unit is shaped by what IS there. Per skill: a
 `sendX(q, agent, input: SkillInput, opts?)` helper (`SkillInput` =
 `string | Part[]` — text for the common case, Parts when `inputModes` wants
 files or data) that tags the skill id into message metadata under
-`"a2aq/skillId"`, and — behind `--hooks`, per the orval / connect-query
+`"a2a-query/skillId"`, and — behind `--hooks`, per the orval / connect-query
 precedent that developers want the *hook* as the generated unit — a
 `useX(q, agent)` wrapper over `useSkillTask`. The card's modes and examples
 land in JSDoc, where a schema would otherwise inform the types; the
@@ -345,18 +345,18 @@ Adjacent protocols answer different questions:
   patches, generative-UI events for chat-shaped surfaces.
 - **A2UI** — agents *describe UI* declaratively for a host app to render.
 
-a2aq deliberately stays on the A2A side of that line: it makes task state and
+a2a-query deliberately stays on the A2A side of that line: it makes task state and
 pauses **available to any UI** (cache snapshots, subscriptions, an approval
 queue) without prescribing one. If you are building a chat surface that renders
 an agent's stream, AG-UI/A2UI address that; if you are embedding agent *work* —
-tasks, approvals, dashboards — into an existing product, that is a2aq's lane.
+tasks, approvals, dashboards — into an existing product, that is a2a-query's lane.
 The mcp-query analog of this argument (non-agentic apps as first-class protocol
 consumers) is developed at length in its
 [design doc](https://github.com/johnhenry/mcp-query).
 
 ## The mock is the SDK's own server
 
-`MockA2AAgent` is not a stub of a2aq — it is the SDK's `DefaultRequestHandler`
+`MockA2AAgent` is not a stub of a2a-query — it is the SDK's `DefaultRequestHandler`
 + `JsonRpcTransportHandler` + `InMemoryTaskStore` served through an injected
 `fetch`. Tests and examples exercise the real wire codec, the real first-event
 rules, the real task store — with no sockets and no timers beyond the poll

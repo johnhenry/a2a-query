@@ -51,7 +51,7 @@ export interface InputDecision extends BaseDecision {
 }
 
 /**
- * Compact, serializable devtools events a2aq emits into a `DevtoolsSink`
+ * Compact, serializable devtools events a2a-query emits into a `DevtoolsSink`
  * (e.g. the core's `DevtoolsHub`). Task states are emitted as their enum
  * *names* (`"TASK_STATE_WORKING"`) so timelines read without a decoder ring.
  */
@@ -136,7 +136,7 @@ export interface A2AQueryConfig {
    * Retry policy for transient failures on sends, task polls, and card fetches.
    * Absent ⇒ single-attempt behavior (no retries), exactly as before.
    *
-   * Sends are retried as idempotent because a2aq fixes the A2A `messageId`
+   * Sends are retried as idempotent because a2a-query fixes the A2A `messageId`
    * BEFORE the first attempt and reuses it on every retry — the messageId IS
    * the idempotency key the receiving agent can dedupe on.
    */
@@ -446,7 +446,7 @@ export class A2AQuery {
    * cached and wrapped in a poll-driven TaskHandle whose paused states route
    * through the broker.
    *
-   * **Idempotency contract.** If `message.messageId` is empty, a2aq generates
+   * **Idempotency contract.** If `message.messageId` is empty, a2a-query generates
    * one client-side BEFORE the first attempt; either way the SAME messageId is
    * sent on every retry attempt (when a `retry` policy is configured). The A2A
    * messageId IS the idempotency key: an agent that already processed the id

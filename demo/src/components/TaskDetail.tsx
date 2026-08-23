@@ -2,8 +2,8 @@
 // DevtoolsHub — sends, state changes, artifacts, gates, stream edges), and
 // the task's artifacts read from their own cache entries.
 
-import { useVersioned, useTaskArtifacts, useTaskStatus } from "@johnhenry/a2aq/react";
-import { artifactText, type A2ADevtoolsEvent } from "@johnhenry/a2aq";
+import { useVersioned, useTaskArtifacts, useTaskStatus } from "@johnhenry/a2a-query/react";
+import { artifactText, type A2ADevtoolsEvent } from "@johnhenry/a2a-query";
 import { hub, q } from "../hub";
 import type { DemoTask } from "../taskList";
 import { pretty } from "./TaskBoard";

@@ -9,14 +9,14 @@ import {
   InteractionBroker,
   type A2ADevtoolsEvent,
   type InputDecision,
-} from "@johnhenry/a2aq";
+} from "@johnhenry/a2a-query";
 import {
   MockA2AAgent,
   askAuthThenEchoExecutor,
   askThenEchoExecutor,
   echoExecutor,
   pacedStreamingExecutor,
-} from "@johnhenry/a2aq/testing";
+} from "@johnhenry/a2a-query/testing";
 import type { AgentCard, Message } from "@a2a-js/sdk";
 
 /** Build a user text Message in the SDK's ts-proto shape. */
@@ -104,7 +104,7 @@ export const flakyMock = new MockA2AAgent(echoExecutor(), {
 /**
  * Network sabotage for the flaky agent: the first delivery of every
  * SendMessage drops with a network-ish TypeError BEFORE reaching the server.
- * Because a2aq fixes the A2A messageId before the first attempt and reuses it
+ * Because a2a-query fixes the A2A messageId before the first attempt and reuses it
  * on retries, the retried delivery (same messageId) passes — watch the fleet
  * chip go `degraded` (attempt #1) and recover to `ready`.
  */

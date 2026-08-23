@@ -4,7 +4,7 @@
 // not parameter schemas, so the helpers honestly take SkillInput
 // (string | Part[]) and tag the skill id into message metadata.
 // Run: npx tsx examples/11-skill-codegen.ts
-//   (CLI equivalent: a2aq-codegen <card-url-or-file> -o skills.ts --hooks)
+//   (CLI equivalent: a2a-query-codegen <card-url-or-file> -o skills.ts --hooks)
 
 import { A2AQuery, generateSkillModule, sendSkill, SKILL_METADATA_KEY, type TaskHandle } from "../src/index.js";
 import { MockA2AAgent, echoExecutor } from "../src/testing/mockAgent.js";
@@ -29,7 +29,7 @@ const mock = new MockA2AAgent(echoExecutor(), {
 
 const q = new A2AQuery({ agents: { travel: { url: mock.url, fetchImpl: mock.fetchImpl } }, taskPollMs: 25 });
 
-// ── codegen: card → module source (what `a2aq-codegen --hooks` writes) ───────
+// ── codegen: card → module source (what `a2a-query-codegen --hooks` writes) ───────
 const card = await q.card("travel");
 const source = generateSkillModule(card, { hooks: true });
 console.log("── generated module ──────────────────────────────────────────");

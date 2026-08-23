@@ -1,5 +1,5 @@
 // Wire-level devtools tap. The core's instrumentTransport() wraps TransportLike
-// objects (send/onmessage — MCP-shaped); a2aq's wire surface is an injected
+// objects (send/onmessage — MCP-shaped); a2a-query's wire surface is an injected
 // fetch, so this is the fetch-shaped analog: wrap a fetchImpl, emit compact
 // summaries of every JSON-RPC exchange. Summaries, not dumps — method, ids,
 // sizes, status; request/response BODIES are never included, and streaming

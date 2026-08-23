@@ -106,14 +106,14 @@ describe("generator edge cases", () => {
 
   it("default import specifiers point at the published package", () => {
     const out = generateSkillModule(demoCard, { hooks: true });
-    expect(out).toContain('from "@johnhenry/a2aq"');
-    expect(out).toContain('from "@johnhenry/a2aq/react"');
+    expect(out).toContain('from "@johnhenry/a2a-query"');
+    expect(out).toContain('from "@johnhenry/a2a-query/react"');
   });
 });
 
-describe("a2aq-codegen CLI", () => {
+describe("a2a-query-codegen CLI", () => {
   const cardFile = async (): Promise<string> => {
-    const dir = await mkdtemp(join(tmpdir(), "a2aq-codegen-"));
+    const dir = await mkdtemp(join(tmpdir(), "a2a-query-codegen-"));
     const file = join(dir, "card.json");
     await writeFile(file, JSON.stringify(demoCard));
     return file;
@@ -162,7 +162,7 @@ describe("a2aq-codegen CLI", () => {
   });
 
   it("fails cleanly: no args, unknown flag, extra positional, non-card input, unreachable URL", async () => {
-    const notCard = join(await mkdtemp(join(tmpdir(), "a2aq-codegen-")), "nope.json");
+    const notCard = join(await mkdtemp(join(tmpdir(), "a2a-query-codegen-")), "nope.json");
     await writeFile(notCard, JSON.stringify({ hello: 1 }));
     const dead: typeof fetch = async () => new Response("no", { status: 500 });
     for (const [argv, ioExtra] of [

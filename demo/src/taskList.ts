@@ -1,8 +1,8 @@
-// A tiny app-level registry of launched demo tasks. a2aq's cache holds the
+// A tiny app-level registry of launched demo tasks. a2a-query's cache holds the
 // task SNAPSHOTS; this store just remembers which handles the user launched
 // (and in what order) so the board can render them.
 
-import type { TaskHandle } from "@johnhenry/a2aq";
+import type { TaskHandle } from "@johnhenry/a2a-query";
 
 export interface DemoTask {
   key: number;

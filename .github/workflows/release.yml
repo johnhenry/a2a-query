@@ -1,6 +1,6 @@
 name: Release
 
-# Publish @johnhenry/a2aq to npm.
+# Publish @johnhenry/a2a-query to npm.
 #   - Tag-triggered: push a tag like v0.1.0 (must match the package version).
 #   - Or run manually via workflow_dispatch (uses the version already in package.json).
 # Requires the NPM_TOKEN repo secret.

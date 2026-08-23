@@ -1,6 +1,6 @@
 {
-  "name": "@johnhenry/a2aq",
-  "version": "0.1.0-rc.5",
+  "name": "@johnhenry/a2a-query",
+  "version": "0.0.0",
   "description": "Reactive, cached, embeddable A2A client for non-agentic apps — agent-card registry, task-handle store, approval broker. TanStack-Query-style, on the official @a2a-js/sdk.",
   "repository": {
     "type": "git",
@@ -18,7 +18,7 @@
     "dist"
   ],
   "bin": {
-    "a2aq-codegen": "dist/codegen/cli.js"
+    "a2a-query-codegen": "dist/codegen/cli.js"
   },
   "exports": {
     ".": {

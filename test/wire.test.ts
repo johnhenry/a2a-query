@@ -1,4 +1,4 @@
-// Wire-level devtools: the fetch tap (a2aq's analog of the core's
+// Wire-level devtools: the fetch tap (a2a-query's analog of the core's
 // instrumentTransport, which targets send/onmessage transports). Opt-in via
 // devtoolsWire; summaries only — bodies never dumped, SSE bodies never consumed.
 

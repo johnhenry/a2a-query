@@ -5,7 +5,7 @@
 
 import { useEffect, useReducer, useSyncExternalStore } from "react";
 import { TaskState } from "@a2a-js/sdk";
-import { useTaskStatus } from "@johnhenry/a2aq/react";
+import { useTaskStatus } from "@johnhenry/a2a-query/react";
 
 const nameOf = (state: number): string => TaskState[state] ?? String(state);
 import { q } from "../hub";
