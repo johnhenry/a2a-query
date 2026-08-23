@@ -1,6 +1,6 @@
-# a2aq demo — multi-agent task dashboard / approval inbox
+# a2a-query demo — multi-agent task dashboard / approval inbox
 
-The flagship demo for [`@johnhenry/a2aq`](..): a dashboard that watches a
+The flagship demo for [`@johnhenry/a2a-query`](..): a dashboard that watches a
 fleet of A2A agents, tracks their long-lived tasks live, and — the wedge —
 routes every `INPUT_REQUIRED` / `AUTH_REQUIRED` pause into a human **approval
 inbox** whose decisions visibly resume the tasks. This is the app-side use
@@ -42,7 +42,7 @@ walks the approval flow): `npm test`.
   changes, gates, stream edges) and its artifacts, streamed chunks included.
 - **Approval inbox + audit trail** (right) — `usePendingInput` pending queue
   with approve (free-text respond) / deny, `useAuditLog` decision history.
-- **a2aq devtools** (bottom) — the core `<AgentQueryDevtools>` panel over the
+- **a2a-query devtools** (bottom) — the core `<AgentQueryDevtools>` panel over the
   shared `DevtoolsHub`, including the `a2a:wire` fetch log
   (`devtoolsWire: true`), the cache, the broker queue, and the status store.
 
@@ -65,8 +65,8 @@ walks the approval flow): `npm test`.
 
 ## How it consumes the library
 
-The demo depends on the parent via `"@johnhenry/a2aq": "file:.."` and imports
-only the public surface: the root entrypoint, `@johnhenry/a2aq/react` hooks,
-and `@johnhenry/a2aq/testing` mocks. `npm run dev`/`build`/`test` first build
+The demo depends on the parent via `"@johnhenry/a2a-query": "file:.."` and imports
+only the public surface: the root entrypoint, `@johnhenry/a2a-query/react` hooks,
+and `@johnhenry/a2a-query/testing` mocks. `npm run dev`/`build`/`test` first build
 the parent (`pre*` scripts), so a fresh clone works with just
 `npm install && npm run dev`. It is private and never published.

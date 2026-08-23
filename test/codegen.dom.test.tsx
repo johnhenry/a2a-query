@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// Generated hooks (a2aq-codegen --hooks) — the useX layer rendered for real,
+// Generated hooks (a2a-query-codegen --hooks) — the useX layer rendered for real,
 // against the mock agent, through useSkillTask.
 
 import { describe, it, expect, afterEach } from "vitest";
@@ -49,7 +49,7 @@ describe("generated useBookFlight", () => {
     const params = mock.callLog.find((c) => c.method === "SendMessage")?.params as {
       message: { metadata: Record<string, unknown> };
     };
-    expect(params.message.metadata["a2aq/skillId"]).toBe("book-flight");
+    expect(params.message.metadata["a2a-query/skillId"]).toBe("book-flight");
   });
 
   it("a failing task surfaces through status (send itself resolved — the task failed)", async () => {

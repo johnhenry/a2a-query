@@ -1,6 +1,6 @@
 # API reference — every export, with an example
 
-The complete public surface of `@johnhenry/a2aq`. Conceptual background lives in
+The complete public surface of `@johnhenry/a2a-query`. Conceptual background lives in
 [design.md](./design.md). Runnable demos are in [`examples/`](../examples)
 (`npm run example:01` … `example:12`). For the SDK version this package is pinned
 to and what that means for interop, see the README's
@@ -22,8 +22,8 @@ to and what that means for interop, see the README's
 - [Human-in-the-loop: `interactions` + `InputDecision`](#human-in-the-loop)
 - [Resilience: `retry` + idempotency](#resilience-retry--idempotency)
 - [Devtools: `devtools` + `A2ADevtoolsEvent`](#devtools)
-- [React hooks: `@johnhenry/a2aq/react`](#react-hooks-johnhenrya2aqreact)
-- [Skills: `sendSkill` + `a2aq-codegen`](#skills-sendskill--a2aq-codegen)
+- [React hooks: `@johnhenry/a2a-query/react`](#react-hooks-johnhenrya2aqreact)
+- [Skills: `sendSkill` + `a2a-query-codegen`](#skills-sendskill--a2a-query-codegen)
 - [Push notifications: webhooks](#push-notifications-webhooks)
 - [Keys & tags](#keys--tags)
 - [Re-exported core primitives](#re-exported-core-primitives)
@@ -36,7 +36,7 @@ to and what that means for interop, see the README's
 ### Construction
 
 ```ts
-import { A2AQuery, InteractionBroker } from "@johnhenry/a2aq";
+import { A2AQuery, InteractionBroker } from "@johnhenry/a2a-query";
 
 const q = new A2AQuery({
   agents: {
@@ -141,7 +141,7 @@ entry?.updatedAt; // last write time
 ### `client(agent)`
 
 The underlying SDK `Client` for an agent (lazy, memoized). Use it for anything
-a2aq doesn't wrap yet — it shares the same transport and card.
+a2a-query doesn't wrap yet — it shares the same transport and card.
 
 ```ts
 const sdkClient = await q.client("travel");
@@ -150,10 +150,10 @@ const sdkClient = await q.client("travel");
 ### `cache`
 
 The shared `QueryCache<A2AKey>` from `@johnhenry/agent-query-core`. Everything
-a2aq knows lives here; invalidation is tag-driven (see [Keys & tags](#keys--tags)).
+a2a-query knows lives here; invalidation is tag-driven (see [Keys & tags](#keys--tags)).
 
 ```ts
-import { agentTag } from "@johnhenry/a2aq";
+import { agentTag } from "@johnhenry/a2a-query";
 
 q.cache.invalidateTags([agentTag("travel")]); // blunt: everything from one agent
 q.cache.clear((k) => k.agent === "travel");   // evict instead of staling
@@ -163,7 +163,7 @@ q.cache.clear((k) => k.agent === "travel");   // evict instead of staling
 
 Per-agent connectivity as a core `StatusStore` (versioned, subscribable —
 `idle | connecting | ready | degraded | closed`). Keyed by agent name.
-Transitions a2aq drives:
+Transitions a2a-query drives:
 
 - `connecting` while the SDK client + card are being created; `ready` on success.
 - `degraded` on transient send/poll/card errors (with `lastError`; under a
@@ -178,7 +178,7 @@ q.status.subscribe(() => {
 });
 ```
 
-Inject a shared store to aggregate several clients (e.g. a2aq + mcpq peers in
+Inject a shared store to aggregate several clients (e.g. a2a-query + mcp-query peers in
 one dashboard): `new A2AQuery({ agents, status: sharedStore })` — `q.status`
 then *is* that store.
 
@@ -305,7 +305,7 @@ const unsub = q.cache.subscribe(key, () => render(q.artifact(agent, taskId, "out
 (`content: { $case: "text", value }`), exported from the package root:
 
 ```ts
-import { partText, artifactText, artifactsText } from "@johnhenry/a2aq";
+import { partText, artifactText, artifactsText } from "@johnhenry/a2a-query";
 partText(part);                 // string | undefined (non-text parts → undefined)
 artifactText(artifact);         // text parts concatenated
 artifactsText(artifacts, "\n"); // across artifacts, separator configurable
@@ -337,7 +337,7 @@ task state routes through it as type `"input-required"` or `"auth-required"`,
 with the agent name as the peer and the `Task` as the payload:
 
 ```ts
-import { A2AQuery, InteractionBroker, type InputDecision } from "@johnhenry/a2aq";
+import { A2AQuery, InteractionBroker, type InputDecision } from "@johnhenry/a2a-query";
 
 const broker = new InteractionBroker<InputDecision>({
   policy: ({ type }) => (type === "auth-required" ? "ask" : "allow"),
@@ -395,11 +395,11 @@ const q = new A2AQuery({
 What retries, and why it is safe:
 
 - **Sends** (`sendMessage()` and paused-task resumes via `respond()`/broker
-  approvals). a2aq fixes the A2A `messageId` **before the first attempt** —
+  approvals). a2a-query fixes the A2A `messageId` **before the first attempt** —
   generating one client-side if the caller's `Message` has none — and reuses
   the SAME id on every retry. The messageId IS the idempotency key: an agent
   that already processed it can dedupe the duplicate delivery. This is what
-  lets a2aq pass `idempotent: true` to the core's `withRetry` (which otherwise
+  lets a2a-query pass `idempotent: true` to the core's `withRetry` (which otherwise
   refuses to retry at all).
 - **Task polls** (`getTask`) — natural reads. A transient poll failure retries
   per policy instead of settling the handle; `result()` rejects only on
@@ -415,10 +415,10 @@ count, `retryAt`, and the error. `cancel()` is not retried.
 ## Devtools
 
 Pass any core `DevtoolsSink` (e.g. a `DevtoolsHub` ring buffer) as `devtools`
-and a2aq emits compact, JSON-serializable events. **No sink, zero emission.**
+and a2a-query emits compact, JSON-serializable events. **No sink, zero emission.**
 
 ```ts
-import { A2AQuery, DevtoolsHub, type A2ADevtoolsEvent } from "@johnhenry/a2aq";
+import { A2AQuery, DevtoolsHub, type A2ADevtoolsEvent } from "@johnhenry/a2a-query";
 
 const hub = new DevtoolsHub<A2ADevtoolsEvent>();
 const q = new A2AQuery({ agents, devtools: hub });
@@ -449,12 +449,12 @@ call concerns, and the body size; `dir: "in"` with the HTTP status and a
 `streaming` flag for SSE responses (whose bodies the tap never consumes); a
 rejected fetch emits `error` instead. **Summaries, never body dumps.**
 
-The tap is a2aq's analog of the core's `instrumentTransport` (which wraps
-`send`/`onmessage` transports — a2aq's wire surface is fetch). The wrapper is
-also exported standalone for composing outside a2aq:
+The tap is a2a-query's analog of the core's `instrumentTransport` (which wraps
+`send`/`onmessage` transports — a2a-query's wire surface is fetch). The wrapper is
+also exported standalone for composing outside a2a-query:
 
 ```ts
-import { tapFetch, type A2AWireSummary } from "@johnhenry/a2aq";
+import { tapFetch, type A2AWireSummary } from "@johnhenry/a2a-query";
 const fetchImpl = tapFetch(fetch, (e: A2AWireSummary) => console.log(e));
 ```
 
@@ -465,7 +465,7 @@ One `DevtoolsHub` carries both altitudes (task events + wire log); the core's
 status store:
 
 ```tsx
-import { A2AQuery, DevtoolsHub, type A2ADevtoolsEvent } from "@johnhenry/a2aq";
+import { A2AQuery, DevtoolsHub, type A2ADevtoolsEvent } from "@johnhenry/a2a-query";
 import { AgentQueryDevtools } from "@johnhenry/agent-query-core/react";
 
 const hub = new DevtoolsHub<A2ADevtoolsEvent>();
@@ -486,7 +486,7 @@ events over a flaky network).
 
 ---
 
-## React hooks: `@johnhenry/a2aq/react`
+## React hooks: `@johnhenry/a2a-query/react`
 
 Thin hooks over the store, built on the core's `useSyncExternalStore`
 bindings (no resubscribe churn on inline keys, no re-render on
@@ -556,7 +556,7 @@ function Inbox() {
 
 ### Re-exports
 
-The core hooks compose with a2aq directly and are re-exported for a
+The core hooks compose with a2a-query directly and are re-exported for a
 one-stop import: `useCacheEntry(q.cache, key)`, `useInteractions`,
 `useAuditLog(q.interactions)`, `usePeerStatus(q.status)`, `useVersioned`,
 and the `<AgentQueryDevtools>` panel.
@@ -567,7 +567,7 @@ A skill as a mutation-shaped hook (the orval / connect-query pattern):
 `send(input)` invokes the skill via `sendSkill`, and the hook exposes the
 resulting handle's reactive state — `{ send, sending, error, handle, reply,
 task, status, artifacts, skillId }`. The mounted hook drives the handle's
-loop. Generated per-skill hooks (`a2aq-codegen --hooks`) are one-line
+loop. Generated per-skill hooks (`a2a-query-codegen --hooks`) are one-line
 wrappers over this.
 
 ```tsx
@@ -584,21 +584,21 @@ function Booker() {
 
 ---
 
-## Skills: `sendSkill` + `a2aq-codegen`
+## Skills: `sendSkill` + `a2a-query-codegen`
 
 **What the card actually provides.** A2A's `AgentSkill` is discovery data:
 `id`, `name`, `description`, `tags`, `examples`, and media modes
 (`inputModes`/`outputModes`). It does **not** carry parameter schemas —
 there is no JSON Schema to derive typed params from — and A2A Messages have
-no first-class skill field. a2aq is honest about both: skill invocation
+no first-class skill field. a2a-query is honest about both: skill invocation
 takes `SkillInput` (`string | Part[]`), and the skill id travels in message
-metadata under `SKILL_METADATA_KEY` (`"a2aq/skillId"`). Agents that ignore
+metadata under `SKILL_METADATA_KEY` (`"a2a-query/skillId"`). Agents that ignore
 the key lose nothing; the message is a plain A2A message either way.
 
 ### The runtime layer
 
 ```ts
-import { sendSkill, skillMessage, textPart, SKILL_METADATA_KEY } from "@johnhenry/a2aq";
+import { sendSkill, skillMessage, textPart, SKILL_METADATA_KEY } from "@johnhenry/a2a-query";
 
 // Exactly the sendMessage contract (retry under a fixed messageId,
 // task-shaped replies come back as a TaskHandle):
@@ -623,7 +623,7 @@ header restates the no-schema limitation.
 ### The CLI
 
 ```
-a2aq-codegen <card-url-or-file> [-o out.ts] [--hooks]
+a2a-query-codegen <card-url-or-file> [-o out.ts] [--hooks]
              [--import-from spec] [--react-import-from spec]
 ```
 
@@ -631,7 +631,7 @@ Accepts a card JSON file, a direct card URL, or an agent base URL (the
 well-known `/.well-known/agent-card.json` path is tried as a fallback).
 Without `-o` the module goes to stdout. `--import-from` /
 `--react-import-from` retarget the imports (defaults:
-`@johnhenry/a2aq` and `@johnhenry/a2aq/react`) — useful for monorepos and
+`@johnhenry/a2a-query` and `@johnhenry/a2a-query/react`) — useful for monorepos and
 golden-file tests. Generated output is check-in friendly: regenerate and
 diff, like any orval-style client.
 
@@ -642,7 +642,7 @@ See `examples/11-skill-codegen.ts`.
 ## Push notifications: webhooks
 
 A2A's disconnected-client story: instead of holding a poll loop or a stream
-open, register a webhook and let the agent POST task updates to you. a2aq
+open, register a webhook and let the agent POST task updates to you. a2a-query
 wires both halves.
 
 ### Registering (client side)
@@ -758,13 +758,13 @@ Import them from either package — they are the same objects.
 
 ## Testing: the in-process mock agent
 
-`@johnhenry/a2aq/testing` runs the **SDK's own server stack**
+`@johnhenry/a2a-query/testing` runs the **SDK's own server stack**
 (`DefaultRequestHandler` + `JsonRpcTransportHandler` + `InMemoryTaskStore`)
 behind an injected `fetch`, so tests exercise the real wire codec with no
 sockets.
 
 ```ts
-import { MockA2AAgent, echoExecutor } from "@johnhenry/a2aq/testing";
+import { MockA2AAgent, echoExecutor } from "@johnhenry/a2a-query/testing";
 
 const mock = new MockA2AAgent(echoExecutor(), { name: "echo-agent" });
 const q = new A2AQuery({
@@ -815,7 +815,7 @@ every attempt carried (e.g. that retries reuse the identical messageId).
 `"GetTask"`, `"CancelTask"`, `"GetAgentCard"` for card GETs).
 
 ```ts
-import { MockA2AAgent, echoExecutor, flakyFetchImpl } from "@johnhenry/a2aq/testing";
+import { MockA2AAgent, echoExecutor, flakyFetchImpl } from "@johnhenry/a2a-query/testing";
 
 const mock = new MockA2AAgent(echoExecutor());
 const fetchImpl = flakyFetchImpl(mock, { failFirst: 2, methods: ["SendMessage"] });
@@ -834,7 +834,7 @@ const fetchImpl = flakyFetchImpl(mock, { failFirst: 2, methods: ["SendMessage"] 
 | `pacedStreamingExecutor({ chunks?, stepMs? })` | Streams WORKING → appended artifact chunks (spaced `stepMs`) → COMPLETED; keeps the execution alive for mid-stream drops/resubscribes |
 
 ```ts
-import { failingExecutor } from "@johnhenry/a2aq/testing";
+import { failingExecutor } from "@johnhenry/a2a-query/testing";
 
 const mock = new MockA2AAgent(failingExecutor("disk quota exceeded"));
 // … handle.result() rejects: "task <id> failed: disk quota exceeded"

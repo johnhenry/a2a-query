@@ -1,4 +1,4 @@
-// Skill invocation — the framework-free layer under a2aq-codegen's generated
+// Skill invocation — the framework-free layer under a2a-query-codegen's generated
 // helpers (and the react useSkillTask hook). A2A's AgentSkill is a DISCOVERY
 // shape: it declares media modes (inputModes/outputModes), tags and examples —
 // NOT parameter schemas, and A2A Messages carry no first-class skill field.
@@ -12,11 +12,11 @@ import type { A2AQuery, TaskHandle } from "./client.js";
 /**
  * The metadata key the skill id travels under. A2A has no first-class
  * "skill" field on Message — the card's `skills` are discovery data — so
- * a2aq uses a namespaced metadata key, mirroring how other A2A clients pass
+ * a2a-query uses a namespaced metadata key, mirroring how other A2A clients pass
  * routing hints. Agents that ignore it lose nothing: the message is a plain
  * A2A message either way.
  */
-export const SKILL_METADATA_KEY = "a2aq/skillId";
+export const SKILL_METADATA_KEY = "a2a-query/skillId";
 
 /**
  * What a skill invocation accepts: plain text (wrapped into a `text/plain`

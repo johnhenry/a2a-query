@@ -115,7 +115,7 @@ describe("retry + idempotency", () => {
       flaky: { failFirst: 2, methods: ["SendMessage"] },
       retry: fastRetry,
     });
-    // No messageId from the caller — a2aq must fix one BEFORE the first attempt.
+    // No messageId from the caller — a2a-query must fix one BEFORE the first attempt.
     const bare = { role: "user", parts: [{ content: { $case: "text", value: "hi" } }] };
     const handle = (await q.sendMessage("a1", bare as never)) as TaskHandle;
     const task = await handle.result();

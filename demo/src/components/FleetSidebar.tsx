@@ -1,7 +1,7 @@
 // Agent fleet: card metadata via useAgentCard (mounting triggers the cached,
 // retry-policied fetch), live connectivity chips via usePeerStatus.
 
-import { useAgentCard, usePeerStatus } from "@johnhenry/a2aq/react";
+import { useAgentCard, usePeerStatus } from "@johnhenry/a2a-query/react";
 import { AGENTS, q } from "../hub";
 
 function AgentEntry({ agent }: { agent: string }) {

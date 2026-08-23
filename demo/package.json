@@ -1,8 +1,8 @@
 {
-  "name": "a2aq-demo",
+  "name": "a2a-query-demo",
   "private": true,
   "version": "0.0.0",
-  "description": "Flagship demo for @johnhenry/a2aq — multi-agent task dashboard with an approval inbox, running entirely in-browser against in-process mock A2A agents.",
+  "description": "Flagship demo for @johnhenry/a2a-query — multi-agent task dashboard with an approval inbox, running entirely in-browser against in-process mock A2A agents.",
   "type": "module",
   "scripts": {
     "parent:build": "npm --prefix .. install --no-audit --no-fund && npm --prefix .. run build",
@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@a2a-js/sdk": "1.0.0",
-    "@johnhenry/a2aq": "file:..",
+    "@johnhenry/a2a-query": "file:..",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "serve": "^14.2.6"

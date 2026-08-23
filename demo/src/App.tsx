@@ -1,8 +1,8 @@
-// The flagship a2aq demo: a multi-agent task dashboard with an approval
+// The flagship a2a-query demo: a multi-agent task dashboard with an approval
 // inbox, running entirely in-browser against in-process mock A2A agents.
 
 import { useState } from "react";
-import { AgentQueryDevtools } from "@johnhenry/a2aq/react";
+import { AgentQueryDevtools } from "@johnhenry/a2a-query/react";
 import { broker, hub, q } from "./hub";
 import { launchBilling, launchBurst, launchDeploy, launchFlaky, launchResearch } from "./scenarios";
 import type { DemoTask } from "./taskList";
@@ -25,7 +25,7 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <h1>
-          a2aq <span className="dim">· multi-agent task dashboard</span>
+          a2a-query <span className="dim">· multi-agent task dashboard</span>
         </h1>
         <div className="scenarios">
           {SCENARIOS.map((s) => (
@@ -43,7 +43,7 @@ export default function App() {
         </main>
         <ApprovalInbox />
       </div>
-      <AgentQueryDevtools hub={hub} cache={q.cache} broker={broker} status={q.status} title="a2aq devtools" />
+      <AgentQueryDevtools hub={hub} cache={q.cache} broker={broker} status={q.status} title="a2a-query devtools" />
     </div>
   );
 }

@@ -1,4 +1,4 @@
-// @johnhenry/a2aq/react — thin React hooks over the a2aq store.
+// @johnhenry/a2a-query/react — thin React hooks over the a2a-query store.
 //
 // Built on agent-query-core's react bindings (useCacheEntry /
 // useInteractions), which ride useSyncExternalStore — so the hooks inherit
@@ -99,7 +99,7 @@ export function useTaskArtifacts(q: A2AQuery, ref: TaskRef | undefined): Artifac
 export interface UsePendingInputResult {
   /** Pending broker interactions of the paused-state kinds (`input-required` / `auth-required`). */
   pending: Interaction[];
-  /** Resolve one by id — typed over a2aq's InputDecision. */
+  /** Resolve one by id — typed over a2a-query's InputDecision. */
   resolve: (id: number, decision: InputDecision) => void;
   /** Sugar: approve with the follow-up message that resumes the task. */
   approve: (id: number, message: Message) => void;
@@ -161,7 +161,7 @@ export interface UseSkillTaskResult {
  * `send(input)` invokes the skill via `sendSkill` (the framework-free layer),
  * and the hook exposes the resulting TaskHandle's reactive state — the
  * mounted hook drives the handle's loop, so no `result()` call is needed.
- * Generated per-skill hooks (`a2aq-codegen --hooks`) are thin wrappers over
+ * Generated per-skill hooks (`a2a-query-codegen --hooks`) are thin wrappers over
  * this.
  */
 export function useSkillTask(q: A2AQuery, agent: string, skillId: string): UseSkillTaskResult {
@@ -198,7 +198,7 @@ export function useSkillTask(q: A2AQuery, agent: string, skillId: string): UseSk
   }, [q, agent, skillId, sending, error, handle, reply, task, status, artifacts]);
 }
 
-// The core hooks compose with a2aq directly (useAuditLog(q.interactions),
+// The core hooks compose with a2a-query directly (useAuditLog(q.interactions),
 // usePeerStatus(q.status), useCacheEntry(q.cache, key)) — re-exported so a
 // React app needs a single import.
 export {

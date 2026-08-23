@@ -5,10 +5,10 @@
 // path); denying leaves it parked. Every decision lands in the audit trail.
 
 import { useState } from "react";
-import { useAuditLog, usePendingInput } from "@johnhenry/a2aq/react";
-import { partText } from "@johnhenry/a2aq";
+import { useAuditLog, usePendingInput } from "@johnhenry/a2a-query/react";
+import { partText } from "@johnhenry/a2a-query";
 import type { Task } from "@a2a-js/sdk";
-import type { Interaction } from "@johnhenry/a2aq";
+import type { Interaction } from "@johnhenry/a2a-query";
 import { broker, msg, q } from "../hub";
 
 /** The paused task's prompt — the text of its status message, if any. */

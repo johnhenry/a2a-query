@@ -3,7 +3,7 @@
 // (useTask / useTaskStatus / useTaskArtifacts) drive the handles' loops; no
 // explicit result()/subscribe() calls are needed here.
 
-import type { TaskHandle } from "@johnhenry/a2aq";
+import type { TaskHandle } from "@johnhenry/a2a-query";
 import { msg, q } from "./hub";
 import { taskList } from "./taskList";
 

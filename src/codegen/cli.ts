@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// a2aq-codegen — AgentCard → typed skill-invocation module.
+// a2a-query-codegen — AgentCard → typed skill-invocation module.
 //
-//   a2aq-codegen <card-url-or-file> [-o out.ts] [--hooks]
+//   a2a-query-codegen <card-url-or-file> [-o out.ts] [--hooks]
 //                [--import-from spec] [--react-import-from spec]
 //
 // <card-url-or-file>: an AgentCard JSON file, a direct card URL, or an agent
@@ -21,7 +21,7 @@ export interface CodegenCliIO {
 }
 
 const USAGE =
-  "usage: a2aq-codegen <card-url-or-file> [-o out.ts] [--hooks] [--import-from spec] [--react-import-from spec]";
+  "usage: a2a-query-codegen <card-url-or-file> [-o out.ts] [--hooks] [--import-from spec] [--react-import-from spec]";
 
 const isCard = (v: unknown): v is AgentCard =>
   typeof v === "object" && v !== null && Array.isArray((v as AgentCard).skills);
@@ -83,13 +83,13 @@ export async function runCodegenCli(argv: string[], io: CodegenCliIO = {}): Prom
     const code = generateSkillModule(card, gen);
     if (out) {
       await writeFile(out, code, "utf8");
-      error(`a2aq-codegen: wrote ${card.skills.length} skill(s) from "${card.name}" to ${out}`);
+      error(`a2a-query-codegen: wrote ${card.skills.length} skill(s) from "${card.name}" to ${out}`);
     } else {
       log(code);
     }
     return 0;
   } catch (err) {
-    error(`a2aq-codegen: ${err instanceof Error ? err.message : String(err)}`);
+    error(`a2a-query-codegen: ${err instanceof Error ? err.message : String(err)}`);
     return 1;
   }
 }
