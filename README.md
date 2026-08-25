@@ -55,12 +55,8 @@ if (typeof handle === "object" && "result" in handle) {
 ## Install
 
 ```bash
-npm install @johnhenry/a2a-query@rc
+npm install @johnhenry/a2a-query
 ```
-
-The npm `latest` dist-tag is currently stuck at this package's first-ever
-publish (`0.1.0-rc.1`) — well behind the current release. Install with the
-`@rc` tag to get the current version (`0.1.0-rc.4` as of this writing).
 
 ## Demo
 
