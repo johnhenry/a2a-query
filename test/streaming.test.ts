@@ -30,6 +30,8 @@ interface StreamSetupOpts {
   retry?: { retries: number; baseDelayMs?: number; random?: () => number };
   card?: Partial<AgentCard>;
   wrap?: (mock: MockA2AAgent) => typeof fetch;
+  maxArtifactParts?: number;
+  maxArtifactBytes?: number;
 }
 
 /** A mock agent whose card advertises streaming, wired into a fresh A2AQuery. */
@@ -45,6 +47,8 @@ function streamSetup(executor: AgentExecutor, opts: StreamSetupOpts = {}) {
     streaming: opts.streaming,
     retry: opts.retry,
     taskPollMs: 15,
+    maxArtifactParts: opts.maxArtifactParts,
+    maxArtifactBytes: opts.maxArtifactBytes,
   });
   return { mock, q };
 }
@@ -100,6 +104,25 @@ describe("stream-driven cache + devtools", () => {
     expect(types).toContain("a2a:task-status");
     expect(hub.events().filter((e) => e.type === "a2a:artifact")).toHaveLength(1);
     expect(phases(hub)).toEqual(["open"]);
+  });
+
+  it("caps unbounded artifact growth from an endless streamed append sequence (maxArtifactParts)", async () => {
+    const hub = new DevtoolsHub<A2ADevtoolsEvent>();
+    const chunks = Array.from({ length: 50 }, (_, i) => `chunk-${i}`);
+    const { q } = streamSetup(pacedStreamingExecutor({ chunks, stepMs: 1 }), {
+      devtools: hub,
+      maxArtifactParts: 5,
+    });
+    const handle = (await q.sendMessage("a1", msg("go"))) as TaskHandle;
+    const task = await handle.result();
+
+    const artifact = q.artifacts("a1", task.id).find((a) => a.artifactId === "out");
+    expect(artifact?.parts.length).toBeLessThanOrEqual(5);
+    expect(artifact?.parts.length).toBe(5); // growth actually stopped, not just eventually slowed
+
+    const capped = hub.events().filter((e) => e.type === "a2a:artifact-capped");
+    expect(capped.length).toBeGreaterThan(0);
+    expect(capped[0]).toMatchObject({ agent: "a1", taskId: task.id, artifactId: "out" });
   });
 
   it("terminal FAILED via the stream rejects with the server detail", async () => {

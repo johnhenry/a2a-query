@@ -182,4 +182,40 @@ describe("createWebhookHandler input handling", () => {
     expect((await post(chunk("world", true))).status).toBe(200);
     expect(artifactText({ artifacts: q.artifacts("worker", "task-y") })).toBe("hello world");
   });
+
+  it("caps unbounded artifact growth from an endless append stream (maxArtifactParts)", async () => {
+    const mock = new MockA2AAgent(echoExecutor());
+    const hub = new DevtoolsHub<A2ADevtoolsEvent>();
+    const q = new A2AQuery({
+      agents: { worker: { url: mock.url, fetchImpl: mock.fetchImpl } },
+      devtools: hub,
+      taskPollMs: 15,
+      maxArtifactParts: 5,
+    });
+    const handler = createWebhookHandler(q, { agent: "worker", reconcile: false });
+    const chunk = (i: number, append: boolean) => ({
+      artifactUpdate: {
+        taskId: "task-z",
+        contextId: "ctx",
+        artifact: { artifactId: "out", name: "out", parts: [{ text: `chunk-${i}` }] },
+        append,
+      },
+    });
+    const post = (body: unknown) => handler(new Request(HOOK_URL, { method: "POST", body: JSON.stringify(body) }));
+
+    expect((await post(chunk(0, false))).status).toBe(200);
+    // A malicious/misbehaving remote agent streams far past any reasonable size.
+    for (let i = 1; i <= 50; i++) {
+      expect((await post(chunk(i, true))).status).toBe(200);
+    }
+
+    const artifact = q.artifact("worker", "task-z", "out");
+    expect(artifact?.parts.length).toBeLessThanOrEqual(5);
+    // Growth actually stopped (not just "capped eventually then kept growing slower").
+    expect(artifact?.parts.length).toBe(5);
+
+    const capped = hub.events().filter((e) => e.type === "a2a:artifact-capped");
+    expect(capped.length).toBeGreaterThan(0);
+    expect(capped[0]).toMatchObject({ agent: "worker", taskId: "task-z", artifactId: "out" });
+  });
 });
