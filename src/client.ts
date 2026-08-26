@@ -10,6 +10,7 @@ import {
   type AgentCard,
   type Artifact,
   type Message,
+  type Part,
   type StreamResponse,
   type Task,
   type TaskPushNotificationConfig,
@@ -68,6 +69,14 @@ export type A2ADevtoolsEvent =
   | { type: "a2a:card-refresh"; agent: string }
   /** A pushed (webhook) event was folded into the cache. */
   | { type: "a2a:push"; agent: string; taskId: string; payload: "task" | "statusUpdate" | "artifactUpdate" }
+  /**
+   * An `artifactUpdate(append: true)` was dropped because the artifact hit
+   * `maxArtifactParts`/`maxArtifactBytes` (see `A2AQueryConfig`) — a remote
+   * agent streaming an endless append sequence can't grow this artifact's
+   * `parts` without bound. `parts`/`bytes` are the accumulated totals AFTER
+   * the drop (i.e. the cap), not including the rejected increment.
+   */
+  | { type: "a2a:artifact-capped"; agent: string; taskId: string; artifactId: string; parts: number; bytes: number }
   /**
    * A streaming lifecycle edge for an observed task: the initial send stream
    * opened, a resubscribe (re)attached, the stream dropped mid-flight, or the
@@ -167,6 +176,22 @@ export interface A2AQueryConfig {
    * never consumed). Requires `devtools`; default false.
    */
   devtoolsWire?: boolean;
+  /**
+   * Cap on total accumulated `parts` an artifact may grow to via
+   * `artifactUpdate(append: true)` streaming updates. A malicious/misbehaving
+   * remote A2A agent could otherwise stream an endless sequence of appends
+   * and grow `Task.artifacts[].parts` without bound. Once EITHER this or
+   * `maxArtifactBytes` is reached, further appended parts for that artifact
+   * are dropped (already-accumulated parts are kept as-is) and an
+   * `a2a:artifact-capped` devtools event fires. Default 10,000.
+   */
+  maxArtifactParts?: number;
+  /**
+   * Cap on total accumulated part size (bytes, estimated) an artifact may
+   * grow to via `artifactUpdate(append: true)`. Same drop-and-signal
+   * behavior as `maxArtifactParts` once reached. Default 50MB.
+   */
+  maxArtifactBytes?: number;
 }
 
 /**
@@ -240,6 +265,31 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 const artifactIndexKey = (agent: string, taskId: string): string => JSON.stringify([agent, taskId]);
 
 const stateName = (state: TaskState): string => TaskState[state] ?? String(state);
+
+const DEFAULT_MAX_ARTIFACT_PARTS = 10_000;
+const DEFAULT_MAX_ARTIFACT_BYTES = 50 * 1024 * 1024; // 50MB
+
+/** A conservative byte-size estimate for one artifact Part — used only to enforce maxArtifactBytes. */
+function partSize(part: Part): number {
+  switch (part.content?.$case) {
+    case "text":
+      return part.content.value.length;
+    case "raw":
+      return part.content.value.length; // Buffer byte length
+    case "url":
+      return part.content.value.length;
+    case "data":
+      try {
+        return JSON.stringify(part.content.value).length;
+      } catch {
+        return 0;
+      }
+    default:
+      return 0;
+  }
+}
+
+const partsSize = (parts: Part[]): number => parts.reduce((n, p) => n + partSize(p), 0);
 
 export class A2AQuery {
   readonly cache: QueryCache<A2AKey>;
@@ -567,6 +617,37 @@ export class A2AQuery {
     });
   }
 
+  /**
+   * Merge an `artifactUpdate(append: true)` against the existing cached
+   * artifact, capping total accumulated parts/bytes (see `maxArtifactParts`/
+   * `maxArtifactBytes` on `A2AQueryConfig`) so an endless append stream from
+   * a remote agent can't grow memory without bound. Once either cap would be
+   * exceeded, the incoming parts for THIS update are dropped — the existing
+   * accumulated parts are kept as-is — and an `a2a:artifact-capped` devtools
+   * event fires so callers can detect/surface it. Non-append updates (a fresh
+   * artifact, or `append: false`) always pass through untouched.
+   */
+  private mergeArtifact(agent: string, taskId: string, existing: Artifact | undefined, incoming: Artifact, append: boolean): Artifact {
+    if (!existing || !append) return incoming;
+    const maxParts = this.cfg.maxArtifactParts ?? DEFAULT_MAX_ARTIFACT_PARTS;
+    const maxBytes = this.cfg.maxArtifactBytes ?? DEFAULT_MAX_ARTIFACT_BYTES;
+    const existingBytes = partsSize(existing.parts);
+    const nextParts = existing.parts.length + incoming.parts.length;
+    const nextBytes = existingBytes + partsSize(incoming.parts);
+    if (nextParts > maxParts || nextBytes > maxBytes) {
+      this.emit({
+        type: "a2a:artifact-capped",
+        agent,
+        taskId,
+        artifactId: incoming.artifactId,
+        parts: existing.parts.length,
+        bytes: existingBytes,
+      });
+      return { ...incoming, parts: existing.parts };
+    }
+    return { ...incoming, parts: [...existing.parts, ...incoming.parts] };
+  }
+
   // ── artifacts ─────────────────────────────────────────────────────────────
   /** A task's artifacts, read from their own cache entries (insertion order). */
   artifacts(agent: string, taskId: string): Artifact[] {
@@ -680,8 +761,7 @@ export class A2AQuery {
         const { taskId, artifact: incoming } = p.value;
         if (!taskId || !incoming) return taskId || undefined;
         const existing = this.artifact(agent, taskId, incoming.artifactId);
-        const merged =
-          existing && p.value.append ? { ...incoming, parts: [...existing.parts, ...incoming.parts] } : incoming;
+        const merged = this.mergeArtifact(agent, taskId, existing, incoming, !!p.value.append);
         const list = this.artifacts(agent, taskId);
         const at = list.findIndex((a) => a.artifactId === merged.artifactId);
         const artifacts = at < 0 ? [...list, merged] : list.map((a, i) => (i === at ? merged : a));
@@ -882,8 +962,7 @@ export class A2AQuery {
           // Merge against the artifact ENTRY (the canonical copy — inline task
           // artifacts are empty under detachArtifacts), then upsert in place.
           const existing = this.artifact(agent, seed.id, incoming.artifactId);
-          const merged =
-            existing && p.value.append ? { ...incoming, parts: [...existing.parts, ...incoming.parts] } : incoming;
+          const merged = this.mergeArtifact(agent, seed.id, existing, incoming, !!p.value.append);
           const list = this.artifacts(agent, seed.id);
           const at = list.findIndex((a) => a.artifactId === merged.artifactId);
           const artifacts = at < 0 ? [...list, merged] : list.map((a, i) => (i === at ? merged : a));
