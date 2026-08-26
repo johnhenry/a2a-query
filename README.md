@@ -1,5 +1,7 @@
 # @johnhenry/a2a-query — a2a-query
 
+Full documentation: [opensource.johnhenry.me/agent-query/a2a-query](https://opensource.johnhenry.me/agent-query/a2a-query/)
+
 **A reactive, cached, embeddable A2A client for non-agentic applications.**
 
 The official [`@a2a-js/sdk`](https://github.com/a2aproject/a2a-js) gives you transports,
