@@ -6,34 +6,15 @@ on:
   pull_request:
 
 jobs:
-  build-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run test:coverage
-      - run: npm run build
-      - name: Publish smoke (import the built entrypoint)
-        run: node -e "import('./dist/index.js').then(m => { if (!m.A2AQuery) throw new Error('missing QueryCache export'); console.log('ok'); })"
-
-  demo-build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npm ci
-        working-directory: demo
-      # demo's pre-scripts install + build the parent lib (npm --prefix ..) first.
-      - run: npm run build
-        working-directory: demo
-      - name: Demo smoke test (happy-dom, mounts <App> and runs the approval flow)
-        run: npm test
-        working-directory: demo
+  test:
+    uses: johnhenry/workflows/.github/workflows/ci.yml@v1
+    with:
+      node-versions: '["22"]'
+      os: '["ubuntu-latest"]'
+      gate-commands: |
+        npm run typecheck
+        npm test
+        npm run test:coverage
+        npm run build
+        node -e "import('./dist/index.js').then(m => { if (!m.A2AQuery) throw new Error('missing QueryCache export'); console.log('ok'); })"
+        (cd demo && npm ci && npm run build && npm test)
