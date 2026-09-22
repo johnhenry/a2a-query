@@ -58,11 +58,24 @@ if (typeof handle === "object" && "result" in handle) {
 }
 ```
 
+## Contents
+
+- [Install](#install)
+- [Demo](#demo)
+- [Docs & examples](#docs--examples)
+- [Supported protocol versions](#supported-protocol-versions)
+- [Security model](#security-model)
+- [Family](#family)
+
 ## Install
 
 ```bash
 npm install @johnhenry/a2a-query
 ```
+
+Previously published as `@johnhenry/a2aq`; the version line restarted at
+`0.0.0` on the 2026-08 rename to this npm scope (see
+[CHANGELOG.md](./CHANGELOG.md)).
 
 ## Demo
 
@@ -104,10 +117,10 @@ npm run demo:dev   # or: cd demo && npm install && npm run dev
 ## Supported protocol versions
 
 `a2a-query` is built on the official [`@a2a-js/sdk`](https://github.com/a2aproject/a2a-js),
-pinned as an **exact** peer dependency — `"@a2a-js/sdk": "1.0.0"` in
+pinned as an **exact** peer dependency — `"@a2a-js/sdk": "1.0.1"` in
 [`package.json`](./package.json), not a caret or range. That's the source of
 truth for what this package supports; treat any other version claim as
-secondary to it. The pin is exact (rather than `^1.0.0`) because the SDK only
+secondary to it. The pin is exact (rather than `^1.0.1`) because the SDK only
 just reached its 1.0 general-availability release and its surface may still
 shift before it settles — a caret range could silently pull in a breaking
 minor before a2a-query has verified against it.
@@ -137,9 +150,74 @@ Concretely, this means:
   asserting spec release dates that couldn't be independently verified from
   this environment.
 
-Part of the [agent-query family](https://github.com/johnhenry/agent-query-core):
-shared engine in `@johnhenry/agent-query-core`; siblings
-[`@johnhenry/mcp-query`](https://github.com/johnhenry/mcp-query) (MCP) and
-`@johnhenry/acp-query` (ACP).
+## Security model
+
+`a2a-query` sits on three real trust boundaries: an inbound webhook that
+accepts pushes from the outside network (`createWebhookHandler`), a broker
+that gates whether a paused task may resume (`InteractionBroker`), and an
+opt-in autopilot for HTTP 402 payment challenges (`x402Interceptor`). None of
+these make a2a-query a security sandbox for untrusted agent code — it
+mediates *who may push data in* and *who may approve a resume or a payment*,
+not what an agent itself is allowed to do.
+
+**What a2a-query guarantees:**
+
+- **A webhook with a configured token rejects any POST that doesn't present
+  it.** `createWebhookHandler` compares `X-A2A-Notification-Token` (or an
+  `Authorization: Bearer` header) against `opts.token` and returns `401` on
+  any mismatch, before the body is folded into the cache (`src/webhook.ts`).
+- **A pushed update is never treated as authoritative on its own.** By
+  default (`reconcile !== false`), every accepted push is followed by a full
+  `getTask` read before anything downstream can rely on it — pushes can
+  arrive out of order, duplicated, or with gaps, so the fold is provisional
+  until reconciled (`src/webhook.ts`, family reconcile rule).
+- **A paused task (`INPUT_REQUIRED` / `AUTH_REQUIRED`) can only resume
+  through the broker's `gate()`, and at most once per handle at a time.** A
+  single-flight guard (`brokerInflight`) prevents a second prompt while one
+  is outstanding, and the broker is re-prompted only on an actual transition
+  into a new paused state, not on every poll (`src/client.ts`, the
+  `brokerInflight` guard).
+- **The devtools wire tap never captures request or response bodies.**
+  `tapFetch` emits only method, ids, byte counts, and HTTP status; streamed
+  (SSE) response bodies are never read by the tap at all — verified directly
+  against `src/wire.ts`, not just repeated from prose.
+- **An x402 retry is bounded to one attempt, and only for idempotent
+  operations.** `x402Interceptor` retries the original request at most once
+  (`op.state.x402Retried`) and only after `op.state.idempotent === true`;
+  anything else throws `X402ChallengeError` instead of retrying silently
+  (`src/x402Interceptor.ts`).
+
+**What is still yours:**
+
+- **An unconfigured webhook token means no auth check at all.** `token` is
+  optional; if you omit it, `createWebhookHandler` accepts any POST that
+  parses as a valid push. The source comment is explicit that this is
+  in-process/testing-only — deploying a webhook without a token is your
+  mistake, not a mode a2a-query defends against.
+- **The x402 autopilot never touches money.** `x402Interceptor` is
+  verification/simulation only: approving a challenge marks it resolved in
+  the broker and retries the request once — it never signs a payment,
+  attaches a real payment proof, or holds any key custody. Wiring an actual
+  payment rail (and deciding what "approve" should cost) is entirely your
+  own code, driven through the `policy` function you pass to the broker.
+- **The broker's correctness is whatever `policy` you inject.** A `policy`
+  that returns `"allow"` unconditionally auto-clears every `INPUT_REQUIRED`,
+  `AUTH_REQUIRED`, and x402 pause with no human in the loop — a2a-query
+  enforces that *something* gates the resume, not that the gate is
+  meaningful.
+- **A failed reconcile doesn't fail the webhook receipt.** If the post-push
+  `getTask` read throws, the push is still acknowledged `200`; the
+  `StatusStore` carries the degradation, but nothing forces a caller to be
+  watching it. We found no open GitHub issue tracking this specific gap at
+  the time of writing — treat it as a documented caveat, not a promise of a
+  future fix.
+
+## Family
+
+| Protocol | Library | Status |
+|---|---|---|
+| MCP | [`@johnhenry/mcp-query`](https://github.com/johnhenry/mcp-query) | published — sibling, shares `@johnhenry/agent-query-core` |
+| ACP | `@johnhenry/acp-query` | published — sibling, shares `@johnhenry/agent-query-core` |
+| — | [`@johnhenry/agent-query-core`](https://github.com/johnhenry/agent-query-core) | published — the shared cache/broker/interceptor engine underneath a2a-query |
 
 MIT
