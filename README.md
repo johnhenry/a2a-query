@@ -2,7 +2,7 @@
 
 [![npm version](https://img.shields.io/npm/v/%40johnhenry%2Fa2a-query.svg)](https://www.npmjs.com/package/@johnhenry/a2a-query)
 [![CI](https://github.com/johnhenry/a2a-query/actions/workflows/ci.yml/badge.svg)](https://github.com/johnhenry/a2a-query/actions/workflows/ci.yml)
-[![license](https://img.shields.io/npm/l/%40johnhenry%2Fa2a-query.svg)](https://www.npmjs.com/package/@johnhenry/a2a-query)
+[![license](https://img.shields.io/npm/l/%40johnhenry%2Fa2a-query.svg)](LICENSE)
 
 Full documentation: [opensource.johnhenry.me/agent-query/a2a-query](https://opensource.johnhenry.me/agent-query/a2a-query/)
 
