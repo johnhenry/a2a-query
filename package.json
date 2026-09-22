@@ -10,6 +10,9 @@
   "bugs": "https://github.com/johnhenry/a2a-query/issues",
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "sideEffects": false,
   "main": "./dist/index.js",
   "module": "./dist/index.js",
