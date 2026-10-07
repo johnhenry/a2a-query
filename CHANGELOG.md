@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Node 26 is the floor** (`engines.node` `>=26.0.0`, CI and release on 26,
+  `.nvmrc` 26), moved in lockstep across the `*-query` family
+  (agent-query-core, a2a-query, acp-query, mcp-query), the family-wide
+  standard. Node 26's npm can also publish through npm trusted publishing.
+
 ## 0.0.0 — npm scope migration (2026-08-23)
 
 First release under this name. Renamed from `@johnhenry/a2aq` during the

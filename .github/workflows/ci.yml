@@ -9,7 +9,7 @@ jobs:
   test:
     uses: johnhenry/workflows/.github/workflows/ci.yml@v1
     with:
-      node-versions: '["22"]'
+      node-versions: '["26"]'
       os: '["ubuntu-latest"]'
       gate-commands: |
         npm run typecheck
