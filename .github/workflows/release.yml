@@ -1,26 +1,22 @@
 name: Release
 
-# Publish @johnhenry/a2a-query to npm.
-#   - Tag-triggered: push a tag like v0.1.0 (must match the package version).
-#   - Or run manually via workflow_dispatch (uses the version already in package.json).
-# Requires the NPM_TOKEN repo secret.
-#
-# Publishing is idempotent: a version already on the registry is skipped, so
-# re-running a release or dispatching twice is safe.
+# Publish model: main is the release branch. A push to main publishes only if
+# package.json's version isn't on npm yet (otherwise a clean no-op), then tags
+# v<version> and creates a GitHub Release. See johnhenry/workflows' README.
 on:
   push:
-    tags: ["v*"]
-  workflow_dispatch:
+    branches: [main]
+  workflow_dispatch: {}
 
 concurrency:
-  group: npm-publish
+  group: publish-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write # tag + GitHub Release by-product
       id-token: write # npm provenance
     env:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -37,15 +33,12 @@ jobs:
           npm run typecheck
           npm test
           npm run build
-      - name: Verify tag matches package version
-        if: github.ref_type == 'tag'
+      - name: Resolve version from package.json
+        # No tag exists on a push to main: package.json is the source of truth,
+        # and the idempotent `npm view` check in the publish step is the guard.
+        id: ver
         run: |
-          PKG_VERSION=$(node -p "require('./package.json').version")
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
-            echo "tag v$TAG_VERSION does not match package version $PKG_VERSION" >&2
-            exit 1
-          fi
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: No NPM_TOKEN — skipping publish
         if: env.NPM_TOKEN == ''
@@ -53,6 +46,7 @@ jobs:
           echo "::notice title=Publish skipped::NPM_TOKEN is not configured; nothing was published."
 
       - name: Publish to npm
+        id: publish
         if: env.NPM_TOKEN != ''
         # Prerelease versions go to the "rc" dist-tag; stable to "latest".
         # Idempotent: `npm view` exits non-zero for a version that isn't on the
@@ -62,6 +56,7 @@ jobs:
           PKG_VERSION=$(node -p "require('./package.json').version")
           if npm view "$PKG_NAME@$PKG_VERSION" version >/dev/null 2>&1; then
             echo "::notice title=Already published::$PKG_NAME@$PKG_VERSION is already on npm; nothing to do."
+            echo "published=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           case "$PKG_VERSION" in
@@ -70,5 +65,18 @@ jobs:
           esac
           echo "publishing $PKG_NAME@$PKG_VERSION with dist-tag $DIST_TAG"
           npm publish --provenance --access public --tag "$DIST_TAG"
+          echo "published=true" >> "$GITHUB_OUTPUT"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Tag and GitHub Release (by-product)
+        if: steps.publish.outputs.published == 'true'
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "::notice title=Release exists::v$VERSION already has a GitHub Release."
+            exit 0
+          fi
+          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes $(case "$VERSION" in *-*) echo --prerelease ;; esac)
+        env:
+          GH_TOKEN: ${{ github.token }}
