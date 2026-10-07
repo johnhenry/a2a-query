@@ -2,10 +2,9 @@
 
 `@johnhenry/a2a-query` — reactive, cached, embeddable A2A client for
 non-agentic apps: agent-card registry, task-handle store, approval broker,
-built on the official `@a2a-js/sdk`. Single package, Node >= 22 (see
-`package.json` `engines` — the family floor is `>=26.0.0`, but this repo's CI
-genuinely runs 22; raising it is a deliberate human decision, not something
-to change here), vitest (`npm test`), builds to `dist/` via
+built on the official `@a2a-js/sdk`. Single package, Node >= 26 (the family
+floor; `engines`, CI, and `.nvmrc` agree, and the `*-query` repos move
+together), vitest (`npm test`), builds to `dist/` via
 `tsc -p tsconfig.build.json`. A `demo/` subdirectory is its own npm project
 with its own lockfile — don't assume a root `npm install` covers it.
 

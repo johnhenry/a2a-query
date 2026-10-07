@@ -11,7 +11,7 @@
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=26.0.0"
   },
   "sideEffects": false,
   "main": "./dist/index.js",
