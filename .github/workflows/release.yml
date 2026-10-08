@@ -71,12 +71,6 @@ jobs:
 
       - name: Tag and GitHub Release (by-product)
         if: steps.publish.outputs.published == 'true'
-        run: |
-          VERSION="${{ steps.ver.outputs.version }}"
-          if gh release view "v$VERSION" >/dev/null 2>&1; then
-            echo "::notice title=Release exists::v$VERSION already has a GitHub Release."
-            exit 0
-          fi
-          gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes $(case "$VERSION" in *-*) echo --prerelease ;; esac)
-        env:
-          GH_TOKEN: ${{ github.token }}
+        uses: johnhenry/workflows/.github/actions/create-release@v1
+        with:
+          version: ${{ steps.ver.outputs.version }}
