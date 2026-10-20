@@ -113,6 +113,7 @@ npm run demo:dev   # or: cd demo && npm install && npm run dev
 | `npm run example:10` | Wire log — `devtoolsWire` fetch tap: unified timeline of task events + wire traffic |
 | `npm run example:11` | Skill codegen — `AgentCard` skills → typed `sendX`/`useX` module (`a2a-query-codegen --hooks`) |
 | `npm run example:12` | Push webhook — `createWebhookHandler`: a receiver driven entirely by pushes, never polls or sends |
+| `npm run example:14` | Browser transport — CORS preflight, bearer auth via a fetch wrapper and SSE over a real local HTTP server, with `browserLikeFetch` enforcing browser CORS rules (`docs/api.md` "Browser transport") |
 
 ## Supported protocol versions
 

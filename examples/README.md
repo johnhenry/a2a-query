@@ -22,6 +22,7 @@ own server stack (`DefaultRequestHandler` + `JsonRpcTransportHandler` +
 | 11 | [`11-skill-codegen.ts`](./11-skill-codegen.ts) | An `AgentCard`'s skills turn into a typed invocation module: framework-free `sendX` helpers plus `useX` hooks, generated, not hand-written | `npm run example:11` |
 | 12 | [`12-push-webhook.ts`](./12-push-webhook.ts) | A receiver driven entirely by pushes: `createWebhookHandler` folds pushed updates into the same cache the poll/stream drivers write, never polling or sending itself | `npm run example:12` |
 | 13 | [`13-x402-autopilot.ts`](./13-x402-autopilot.ts) | The same `InteractionBroker`/policy pattern as 06, applied to x402 (HTTP 402) payment challenges — the interceptor retries once and only simulates payment, it never signs or moves money | `npm run example:13` |
+| 14 | [`14-browser-transport.ts`](./14-browser-transport.ts) | The browser path over a real local HTTP server: CORS preflight (`A2A-Version` rides on every request), a bearer token added through a fetch wrapper, SSE streaming; `browserLikeFetch` enforces the browser's CORS rules so the config is proven page-safe | `npm run example:14` |
 
 To point any of these at a **real** agent, replace the in-process mock server stack
 with a live endpoint URL — everything else is identical; that's the point.

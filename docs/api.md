@@ -756,6 +756,68 @@ Import them from either package — they are the same objects.
 
 ---
 
+## Browser transport: CORS, SSE, auth
+
+A page talks to an A2A agent with plain `fetch`; nothing in `A2AQuery` is
+Node-specific. What differs from a server is what the **browser** enforces. This
+section is verified by `test/browser-transport.test.ts` and
+`examples/14-browser-transport.ts`, which run the client over a real local HTTP
+server through `browserLikeFetch` (see below).
+
+**CORS: the agent's server must allow the page.** The SDK sends an `A2A-Version`
+header on every request, including the agent-card `GET`, and `Content-Type:
+application/json` on JSON-RPC `POST`s. Both are non-simple, so the browser sends an
+`OPTIONS` preflight first. The agent must answer it (2xx) and set on real responses:
+
+```
+Access-Control-Allow-Origin:  https://app.example      (or *, without credentials)
+Access-Control-Allow-Methods: GET, POST, OPTIONS
+Access-Control-Allow-Headers: content-type, a2a-version, authorization, a2a-extensions
+Access-Control-Expose-Headers: (any response header the page must read)
+```
+
+Add `authorization` only if you send one, and `a2a-extensions` only if you activate
+extensions. `Access-Control-Allow-Headers: *` does not cover `Authorization`. If the
+preflight is missing a header the browser reports an opaque `TypeError: Failed to
+fetch`; `a2a:wire` devtools events and the agent's own access log are where the real
+reason shows up.
+
+**Auth headers.** `AgentConfig` has no header option on purpose: supply credentials
+by wrapping `fetchImpl` (this also works for token refresh):
+
+```ts
+const authed: typeof fetch = (input, init) => {
+  const headers = new Headers(init?.headers);
+  headers.set("authorization", `Bearer ${getToken()}`);
+  return fetch(input, { ...init, headers });
+};
+new A2AQuery({ agents: { remote: { url, fetchImpl: authed } } });
+```
+
+Keep tokens out of URLs. Cookies need `credentials: "include"` on the wrapped
+fetch and an `Access-Control-Allow-Origin` that names the origin (not `*`) plus
+`Access-Control-Allow-Credentials: true`.
+
+**SSE streaming and resubscribe.** Streaming uses `fetch` with `Accept:
+text/event-stream` and reads the response body as a stream; there is no
+`EventSource` (it cannot POST or set headers). It needs no extra CORS beyond the
+above, but proxies must not buffer the response (`X-Accel-Buffering: no` for nginx).
+When the connection drops mid-stream the handle goes `degraded`, resubscribes
+(`resubscribeTask`), reconciles with a full `getTask`, and falls back to polling if
+resubscribe keeps failing, exactly as in-process (see Streaming). The test cuts a
+real socket after two events to prove it.
+
+**Testing a CORS config: `@johnhenry/a2a-query/testing/http`** (Node only; the
+browser-safe `/testing` entry is unchanged).
+
+- `serveMockAgent(mock, { cors, requireBearer, dropFirstStreamAfterEvents, responseHeaders })`
+  serves a `MockA2AAgent` over a real socket (card, JSON-RPC, SSE); returns
+  `{ url, requests, close() }`. The card's interface URLs are rewritten to the server.
+- `browserLikeFetch({ origin })` is a fetch that applies the browser's rules:
+  preflight for non-simple requests, `Allow-Origin/Methods/Headers` checks, and
+  dropping response headers that are neither safelisted nor exposed. Node's own
+  `fetch` skips all of this, so use it to prove a server config before shipping.
+
 ## Testing: the in-process mock agent
 
 `@johnhenry/a2a-query/testing` runs the **SDK's own server stack**
