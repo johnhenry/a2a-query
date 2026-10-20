@@ -99,7 +99,7 @@ export async function serveMockAgent(mock: MockA2AAgent, opts: MockAgentServerOp
 
     const cors = corsHeaders(origin);
     if (opts.requireBearer && req.headers.authorization !== `Bearer ${opts.requireBearer}`) {
-      res.writeHead(401, { ...cors, "www-authenticate": "Bearer", "content-type": "application/json" }).end('{"error":"unauthorized"}');
+      res.writeHead(401, { ...cors, ...(opts.responseHeaders ?? {}), "www-authenticate": "Bearer", "content-type": "application/json" }).end('{"error":"unauthorized"}');
       return;
     }
 

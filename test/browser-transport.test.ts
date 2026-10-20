@@ -74,6 +74,17 @@ describe("serveMockAgent + browserLikeFetch", () => {
     expect(res.status).toBe(401);
   });
 
+  it("applies responseHeaders to 401 responses too", async () => {
+    const { server } = await start(echoExecutor(), {
+      cors: { origins: [ORIGIN], headers: ["content-type", "authorization", "a2a-version"], expose: ["x-request-id"] },
+      requireBearer: "tok",
+      responseHeaders: { "x-request-id": "r9" },
+    });
+    const res = await browserLikeFetch({ origin: ORIGIN })(`${server.url}/.well-known/agent-card.json`);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("x-request-id")).toBe("r9");
+  });
+
   it("resubscribes after the SSE connection is cut mid-stream and still completes", async () => {
     const hub = new DevtoolsHub<A2ADevtoolsEvent>();
     const { server } = await start(pacedStreamingExecutor({ chunks: ["a", "b", "c", "d"], stepMs: 30 }), {
