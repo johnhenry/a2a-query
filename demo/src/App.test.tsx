@@ -31,6 +31,9 @@ describe("demo app", () => {
     await waitFor(() => expect(screen.getByText("Deploy web-frontend v2.4.1")).toBeTruthy());
     await waitFor(() => expect(broker.list().length).toBe(1), { timeout: 10_000 });
     await waitFor(() => expect(screen.getAllByText("input-required").length).toBeGreaterThan(0));
+    // The inbox shows the agent's actual question, not the "(no prompt text)" fallback.
+    await waitFor(() => expect(screen.getByText(/Approve the production rollout of web-frontend v2\.4\.1/)).toBeTruthy());
+    expect(screen.queryByText("(no prompt text)")).toBeNull();
 
     // Approve with the free-text reply — the task resumes and completes.
     fireEvent.click(screen.getByText("approve"));

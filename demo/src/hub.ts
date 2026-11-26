@@ -72,7 +72,7 @@ export const researcherMock = new MockA2AAgent(
 );
 
 /** Pauses INPUT_REQUIRED before acting — the approval-inbox star. */
-export const deployerMock = new MockA2AAgent(askThenEchoExecutor(), {
+export const deployerMock = new MockA2AAgent(askThenEchoExecutor({ prompt: "Approve the production rollout of web-frontend v2.4.1? The agent will not proceed without a human go/no-go." }), {
   name: "deploy-bot",
   url: "http://deployer.mock/a2a",
   card: card({
@@ -82,7 +82,7 @@ export const deployerMock = new MockA2AAgent(askThenEchoExecutor(), {
 });
 
 /** Pauses AUTH_REQUIRED — credentials must be supplied by a human. */
-export const billingMock = new MockA2AAgent(askAuthThenEchoExecutor(), {
+export const billingMock = new MockA2AAgent(askAuthThenEchoExecutor({ prompt: "The refund needs access to the billing ledger. Provide a billing API token to continue." }), {
   name: "ledger-billing",
   url: "http://billing.mock/a2a",
   card: card({

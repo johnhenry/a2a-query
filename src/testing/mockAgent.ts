@@ -363,14 +363,16 @@ export function pacedStreamingExecutor(opts: { chunks?: string[]; stepMs?: numbe
 
 /**
  * An executor that pauses INPUT_REQUIRED on the first turn and completes on the
- * follow-up turn with the resumed message's text.
+ * follow-up turn with the resumed message's text. `prompt` is the question the
+ * agent asks: it becomes the paused task's status message (what an approval UI
+ * shows); omitted, the pause carries no message.
  */
-export function askThenEchoExecutor(): AgentExecutor {
+export function askThenEchoExecutor(opts: { prompt?: string } = {}): AgentExecutor {
   return {
     async execute(ctx: RequestContext, bus: ExecutionEventBus): Promise<void> {
       if (!ctx.task) {
         publishTask(bus, ctx, TaskState.TASK_STATE_WORKING);
-        publishStatus(bus, ctx, TaskState.TASK_STATE_INPUT_REQUIRED);
+        publishStatus(bus, ctx, TaskState.TASK_STATE_INPUT_REQUIRED, { statusMessageText: opts.prompt });
         return;
       }
       const text = textOf(ctx);
@@ -393,13 +395,14 @@ export function askThenEchoExecutor(): AgentExecutor {
 /**
  * An executor that pauses AUTH_REQUIRED on the first turn (e.g. "connect your
  * calendar") and completes on the follow-up turn once credentials arrive.
+ * `prompt` is carried as the paused task's status message, as for askThenEchoExecutor.
  */
-export function askAuthThenEchoExecutor(): AgentExecutor {
+export function askAuthThenEchoExecutor(opts: { prompt?: string } = {}): AgentExecutor {
   return {
     async execute(ctx: RequestContext, bus: ExecutionEventBus): Promise<void> {
       if (!ctx.task) {
         publishTask(bus, ctx, TaskState.TASK_STATE_WORKING);
-        publishStatus(bus, ctx, TaskState.TASK_STATE_AUTH_REQUIRED);
+        publishStatus(bus, ctx, TaskState.TASK_STATE_AUTH_REQUIRED, { statusMessageText: opts.prompt });
         return;
       }
       const text = textOf(ctx);
